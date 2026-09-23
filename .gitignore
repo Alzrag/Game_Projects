@@ -102,5 +102,11 @@ InitTestScene*.unity*
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
 
+<<<<<<< HEAD
+=======
+# UI Toolkit auto generated files
+/UIElementsSchema/
+
+>>>>>>> 66589bb (initial commit for star wars vanguard)
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
