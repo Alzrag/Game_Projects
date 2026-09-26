@@ -413,6 +413,18 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 21920a5949fcad49abf9d2a1e66a91f4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: '::'
+  playerCamera: {fileID: 330585545}
+  camMode: 0
+  walkSpeed: 6
+  runMult: 2
+  jumpPower: 7
+  gravity: 9.8
+  lookXSpeed: 2
+  lookYSpeed: 2
+  lookYLimit: 45
+  fpsPos: {fileID: 892793333}
+  tpsPos: {fileID: 943772689}
+  camTransitionSpeed: 10
 --- !u!1 &410087039
 GameObject:
   m_ObjectHideFlags: 0
@@ -644,13 +656,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 943772688}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 3.59, y: 1.18, z: -0.83}
+  m_LocalRotation: {x: 0, y: -0.7071068, z: 0, w: 0.7071068}
+  m_LocalPosition: {x: -0.434, y: 1.18, z: -4.33}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 382070566}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: -90, z: 0}
 --- !u!1 &1208663294
 GameObject:
   m_ObjectHideFlags: 0
@@ -678,13 +690,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1208663294}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -0.24, y: 0.479, z: 0}
+  m_LocalRotation: {x: 0, y: 0.7071068, z: 0, w: 0.7071068}
+  m_LocalPosition: {x: -0, y: 0.479, z: 0.25}
   m_LocalScale: {x: 0.73, y: 0.28, z: 0.48}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 382070566}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 90, z: 0}
 --- !u!65 &1208663296
 BoxCollider:
   m_ObjectHideFlags: 0
