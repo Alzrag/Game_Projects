@@ -14,7 +14,9 @@ public class PlayerMovement : MonoBehaviour
 
     public float lookXSpeed = 2f;
     public float lookYSpeed = 2f;
-    public float lookYLimit = 45f;
+
+    [Tooltip("Vertical look clamp, applied the same way in both FPS and TPS since they share the same pitch value.")]
+    public float lookYLimit = 90f;
 
     public Transform fpsPos;
     public Transform tpsPos1; // First third-person position (Right shoulder)
@@ -22,6 +24,39 @@ public class PlayerMovement : MonoBehaviour
     private int tpsIndex = 0;   // 0 for tpsPos1, 1 for tpsPos2
 
     public float camTransitionSpeed = 10f;
+
+    [Header("Dash")]
+    [Tooltip("Horizontal speed while dashing.")]
+    public float dashSpeed = 20f;
+    [Tooltip("How long the dash lasts, in seconds.")]
+    public float dashDuration = 0.2f;
+    [Tooltip("Time after a dash ends before another can be triggered.")]
+    public float dashCooldown = 1f;
+
+    private float dashTimer = 0f;
+    private float dashCooldownTimer = 0f;
+    private Vector3 dashDirection;
+
+    [Tooltip("Max time between two Left Alt presses for it to count as a double-tap.")]
+    public float dashDoubleTapWindow = 0.3f;
+    private float lastAltPressTime = -10f;
+
+    /// <summary>True for the duration of an active dash. Handy for other scripts (e.g. disabling fire while dashing).</summary>
+    public bool IsDashing => dashTimer > 0f;
+
+    [Header("Camera Collision (Third-Person)")]
+    [Tooltip("Radius of the camera's collision probe. Roughly matches the near clip plane so the camera doesn't visibly clip into geometry.")]
+    public float cameraCollisionRadius = 0.2f;
+    [Tooltip("Layers the camera will pull in front of. Exclude the Player layer or you'll get false hits against your own body.")]
+    public LayerMask cameraCollisionMask = ~0;
+    [Tooltip("How quickly the camera eases back outward once no longer obstructed. Pulling inward on collision is instant, this only controls the rebound.")]
+    public float cameraReboundSpeed = 5f;
+
+    private float currentCamDistance = -1f; // -1 = not yet initialized
+
+    [Header("Weapon")]
+    [Tooltip("Assign a transform (parented under this GameObject, same as fpsPos) that should always pitch with the camera so the gun points at screen center.")]
+    public Transform weaponHolder;
 
     private CharacterController characterController;
     private Vector3 moveDirection = Vector3.zero;
@@ -80,8 +115,43 @@ public class PlayerMovement : MonoBehaviour
         Vector3 forward = transform.TransformDirection(Vector3.forward);
         Vector3 right = transform.TransformDirection(Vector3.right);
 
+        // --- Dash ---
+        if (dashCooldownTimer > 0f)
+        {
+            dashCooldownTimer -= Time.deltaTime;
+        }
+
+        // Track Alt taps every frame, independent of whether a dash can currently trigger,
+        // so double-tap timing stays accurate across consecutive dashes/cooldowns.
+        bool altDoubleTapped = false;
+        if (Keyboard.current != null && Keyboard.current.leftAltKey.wasPressedThisFrame)
+        {
+            altDoubleTapped = (Time.time - lastAltPressTime) <= dashDoubleTapWindow;
+            lastAltPressTime = Time.time;
+        }
+
+        bool gamepadDashPressed = Gamepad.current != null && Gamepad.current.buttonEast.wasPressedThisFrame;
+        bool hasDirectionInput = inputDir.sqrMagnitude > 0.01f;
+
+        if ((altDoubleTapped || gamepadDashPressed) && hasDirectionInput && dashTimer <= 0f && dashCooldownTimer <= 0f)
+        {
+            Vector3 dashInputDirection = (forward * inputDir.y) + (right * inputDir.x);
+            dashDirection = dashInputDirection.normalized;
+            dashTimer = dashDuration;
+            dashCooldownTimer = dashCooldown;
+        }
+
         float moveDirectionYStorage = moveDirection.y;
-        moveDirection = (forward * currentSpeed * inputDir.y) + (right * currentSpeed * inputDir.x);
+
+        if (dashTimer > 0f)
+        {
+            moveDirection = dashDirection * dashSpeed;
+            dashTimer -= Time.deltaTime;
+        }
+        else
+        {
+            moveDirection = (forward * currentSpeed * inputDir.y) + (right * currentSpeed * inputDir.x);
+        }
 
         bool isJumpPressed = (Keyboard.current != null && Keyboard.current.spaceKey.isPressed) || (Gamepad.current != null && Gamepad.current.buttonSouth.isPressed);
         moveDirection.y = (isJumpPressed && characterController.isGrounded) ? jumpPower : moveDirectionYStorage;
@@ -101,6 +171,13 @@ public class PlayerMovement : MonoBehaviour
 
         transform.rotation = Quaternion.Euler(0, rotationY, 0);
 
+        // Weapon holder always pitches with the camera (yaw is inherited automatically
+        // since it should be parented under this transform, same as fpsPos).
+        if (weaponHolder != null)
+        {
+            weaponHolder.localRotation = Quaternion.Euler(rotationX, 0f, 0f);
+        }
+
         if (camMode == 0)
         {
             playerCamera.transform.position = Vector3.Lerp(playerCamera.transform.position, fpsPos.position, camTransitionSpeed * Time.deltaTime);
@@ -118,10 +195,37 @@ public class PlayerMovement : MonoBehaviour
             
             // Calculate vector from pivot to the resting shoulder position
             Vector3 pivotToCam = restPos - pivot;
-            
+            Vector3 pivotToCamDir = pivotToCam.normalized;
+            float maxDistance = pivotToCam.magnitude;
+
+            if (currentCamDistance < 0f)
+            {
+                currentCamDistance = maxDistance;
+            }
+
             // Pitch (vertical rotation) around the player's right axis
             Quaternion pitchRotation = Quaternion.AngleAxis(rotationX, transform.right);
-            Vector3 targetTpsPos = pivot + (pitchRotation * pivotToCam);
+            Vector3 rotatedDir = pitchRotation * pivotToCamDir;
+
+            // --- Camera collision ---
+            float desiredDistance = maxDistance;
+            if (Physics.SphereCast(pivot, cameraCollisionRadius, rotatedDir, out RaycastHit camHit, maxDistance, cameraCollisionMask, QueryTriggerInteraction.Ignore))
+            {
+                desiredDistance = Mathf.Max(camHit.distance - cameraCollisionRadius, 0.1f);
+            }
+
+            if (desiredDistance < currentCamDistance)
+            {
+                // Snap inward immediately so the camera never sees through geometry, even for a single frame.
+                currentCamDistance = desiredDistance;
+            }
+            else
+            {
+                // Ease back outward, capped at the normal resting distance.
+                currentCamDistance = Mathf.MoveTowards(currentCamDistance, desiredDistance, cameraReboundSpeed * Time.deltaTime);
+            }
+
+            Vector3 targetTpsPos = pivot + rotatedDir * currentCamDistance;
 
             playerCamera.transform.position = Vector3.Lerp(playerCamera.transform.position, targetTpsPos, camTransitionSpeed * Time.deltaTime);
             

@@ -52,6 +52,7 @@ public class WeaponManager : MonoBehaviour
             activeWeapon = !activeWeapon; // Toggle between primary and secondary
             SwapWeapons();
         }
+
     }
 
     void SwapHands()
