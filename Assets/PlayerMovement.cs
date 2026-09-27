@@ -17,25 +17,45 @@ public class PlayerMovement : MonoBehaviour
     public float lookYLimit = 45f;
 
     public Transform fpsPos;
-    public Transform tpsPos;
+    public Transform tpsPos1; // First third-person position (Right shoulder)
+    public Transform tpsPos2; // Second third-person position (Left shoulder)
+    private int tpsIndex = 0;   // 0 for tpsPos1, 1 for tpsPos2
+
     public float camTransitionSpeed = 10f;
 
     private CharacterController characterController;
     private Vector3 moveDirection = Vector3.zero;
-    private float rotationX = 0f; private float rotationY = 0f; private float speed;
+    private float rotationX = 0f; 
+    private float rotationY = 0f; 
+    private float speed;
+    public bool hand = true; // right hand = true (1) left = false (0);
 
     void Start()
     {
         characterController = GetComponent<CharacterController>();
-        Cursor.lockState = CursorLockMode.Locked; Cursor.visible = false;
+        Cursor.lockState = CursorLockMode.Locked; 
+        Cursor.visible = false;
         speed = walkSpeed;
     }
 
     void Update()
     {
-        float scroll = Mouse.current != null ? Mouse.current.scroll.ReadValue().y : 0f;
-        if (Gamepad.current != null) { if (Gamepad.current.dpad.up.wasPressedThisFrame) camMode = 0; if (Gamepad.current.dpad.down.wasPressedThisFrame) camMode = 1; }
-        if (scroll > 0f) { camMode = 0; } else if (scroll < 0f) { camMode = 1; }
+        // Toggle between First-Person and Third-Person using 'C' key OR D-pad Up
+        bool camTogglePressed = (Keyboard.current != null && Keyboard.current.cKey.wasPressedThisFrame) || 
+                                (Gamepad.current != null && Gamepad.current.dpad.up.wasPressedThisFrame);
+        if (camTogglePressed)
+        {
+            camMode = (camMode == 0) ? 1 : 0;
+        }
+
+        // Swap between TPS Position 1 and TPS Position 2 using 'V' key OR D-pad Left
+        bool tpsSwapPressed = (Keyboard.current != null && Keyboard.current.vKey.wasPressedThisFrame) || 
+                              (Gamepad.current != null && Gamepad.current.dpad.left.wasPressedThisFrame);
+        if (tpsSwapPressed)
+        {
+            tpsIndex = (tpsIndex == 0) ? 1 : 0;
+            hand = !hand; // Toggle hand status to match shoulder view
+        }
 
         bool isRunning = (Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed) || (Gamepad.current != null && Gamepad.current.leftStickButton.isPressed);
         float currentSpeed = isRunning ? walkSpeed * runMult : walkSpeed;
@@ -43,10 +63,10 @@ public class PlayerMovement : MonoBehaviour
         float vertical = 0f; float horizontal = 0f;
         if (Keyboard.current != null)
         {
-            if (Keyboard.current.wKey.isPressed || Keyboard.current.upArrowKey.isPressed) vertical += 1f;
-            if (Keyboard.current.sKey.isPressed || Keyboard.current.downArrowKey.isPressed) vertical -= 1f;
-            if (Keyboard.current.dKey.isPressed || Keyboard.current.rightArrowKey.isPressed) horizontal += 1f;
-            if (Keyboard.current.aKey.isPressed || Keyboard.current.leftArrowKey.isPressed) horizontal -= 1f;
+            if (Keyboard.current.wKey.isPressed) vertical += 1f;
+            if (Keyboard.current.sKey.isPressed) vertical -= 1f;
+            if (Keyboard.current.dKey.isPressed) horizontal += 1f;
+            if (Keyboard.current.aKey.isPressed) horizontal -= 1f;
         }
         if (Gamepad.current != null)
         {
@@ -75,7 +95,8 @@ public class PlayerMovement : MonoBehaviour
         float lookX = (mouseDelta.x * 0.1f) + gamepadLook.x;
         float lookY = (mouseDelta.y * 0.1f) + gamepadLook.y;
 
-        rotationX += -lookY * lookYSpeed; rotationX = Mathf.Clamp(rotationX, -lookYLimit, lookYLimit);
+        rotationX += -lookY * lookYSpeed; 
+        rotationX = Mathf.Clamp(rotationX, -lookYLimit, lookYLimit);
         rotationY += lookX * lookXSpeed;
 
         transform.rotation = Quaternion.Euler(0, rotationY, 0);
@@ -87,14 +108,25 @@ public class PlayerMovement : MonoBehaviour
         }
         else
         {
-            // True third-person orbit calculation around a pivot point above the player
+            // Use the active TPS transform's exact world position as the resting baseline
+            Transform activeTpsPos = (tpsIndex == 0) ? tpsPos1 : tpsPos2;
+            
+            // Pivot point around the upper body of the player
             Vector3 pivot = transform.position + Vector3.up * 1.5f;
-            float distance = (tpsPos != null) ? Vector3.Distance(transform.position, tpsPos.position) : 4f;
-            Quaternion orbitRot = Quaternion.Euler(rotationX, rotationY, 0);
-            Vector3 targetTpsPos = pivot - (orbitRot * Vector3.forward * distance);
+            
+            Vector3 restPos = (activeTpsPos != null) ? activeTpsPos.position : pivot + new Vector3(0.5f, 0f, -3f);
+            
+            // Calculate vector from pivot to the resting shoulder position
+            Vector3 pivotToCam = restPos - pivot;
+            
+            // Pitch (vertical rotation) around the player's right axis
+            Quaternion pitchRotation = Quaternion.AngleAxis(rotationX, transform.right);
+            Vector3 targetTpsPos = pivot + (pitchRotation * pivotToCam);
 
             playerCamera.transform.position = Vector3.Lerp(playerCamera.transform.position, targetTpsPos, camTransitionSpeed * Time.deltaTime);
-            playerCamera.transform.rotation = orbitRot;
+            
+            // Look forward with the combined player yaw and camera pitch
+            playerCamera.transform.rotation = Quaternion.Euler(rotationX, rotationY, 0);
         }
     }
 }
