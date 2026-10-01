@@ -270,6 +270,7 @@ GameObject:
   - component: {fileID: 382070563}
   - component: {fileID: 382070568}
   - component: {fileID: 382070567}
+  - component: {fileID: 382070569}
   m_Layer: 0
   m_Name: Capsule
   m_TagString: Untagged
@@ -423,7 +424,7 @@ MonoBehaviour:
   gravity: 9.8
   lookXSpeed: 2
   lookYSpeed: 2
-  lookYLimit: 45
+  lookYLimit: 90
   fpsPos: {fileID: 892793333}
   tpsPos1: {fileID: 943772689}
   tpsPos2: {fileID: 1920445736}
@@ -432,13 +433,34 @@ MonoBehaviour:
   dashDuration: 0.2
   dashCooldown: 1
   dashDoubleTapWindow: 0.3
-  cameraCollisionRadius: 0.2
+  cameraCollisionRadius: 0.05
   cameraCollisionMask:
     serializedVersion: 2
     m_Bits: 4294967295
   cameraReboundSpeed: 5
   weaponHolder: {fileID: 829160215}
   hand: 1
+--- !u!114 &382070569
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 382070562}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: be9554c797e688ab1a02fac6919bab66, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PlayerMeleeManager
+  damageAmount: 25
+  attackCooldown: 1
+  attackAnimationName: AttackState
+  speedParameterName: AnimSpeed
+  targetLayer:
+    serializedVersion: 2
+    m_Bits: 0
+  animator: {fileID: 0}
+  weaponCollider: {fileID: 0}
 --- !u!1 &410087039
 GameObject:
   m_ObjectHideFlags: 0
@@ -1057,6 +1079,10 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 0}
     m_Modifications:
+    - target: {fileID: 2221652961901648294, guid: 4f2b8c4d68996c202af98660e3c429cc, type: 3}
+      propertyPath: speed
+      value: 200
+      objectReference: {fileID: 0}
     - target: {fileID: 4528451882508599201, guid: 4f2b8c4d68996c202af98660e3c429cc, type: 3}
       propertyPath: m_Name
       value: boltRed
@@ -1157,22 +1183,6 @@ PrefabInstance:
     - target: {fileID: 5307262908997814975, guid: c3d5121467eadf67587efd32d9554cc7, type: 3}
       propertyPath: m_Name
       value: dc-17_hand_blaster
-      objectReference: {fileID: 0}
-    - target: {fileID: 5930148269008798152, guid: c3d5121467eadf67587efd32d9554cc7, type: 3}
-      propertyPath: m_LocalRotation.w
-      value: 0.57735026
-      objectReference: {fileID: 0}
-    - target: {fileID: 5930148269008798152, guid: c3d5121467eadf67587efd32d9554cc7, type: 3}
-      propertyPath: m_LocalRotation.y
-      value: 0.57735026
-      objectReference: {fileID: 0}
-    - target: {fileID: 5930148269008798152, guid: c3d5121467eadf67587efd32d9554cc7, type: 3}
-      propertyPath: m_LocalRotation.z
-      value: 0.57735026
-      objectReference: {fileID: 0}
-    - target: {fileID: 5930148269008798152, guid: c3d5121467eadf67587efd32d9554cc7, type: 3}
-      propertyPath: m_LocalEulerAnglesHint.y
-      value: 90
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []

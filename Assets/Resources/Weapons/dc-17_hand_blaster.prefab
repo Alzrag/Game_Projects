@@ -24,13 +24,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 199588295127575616}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0.7071068, w: 0.7071068}
+  m_LocalRotation: {x: 0, y: 0.57735026, z: 0.57735026, w: 0.57735026}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 4822510585912201221}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 90}
+  m_LocalEulerAnglesHint: {x: 0, y: 90, z: 90}
 --- !u!1 &1983993743440480471
 GameObject:
   m_ObjectHideFlags: 0
@@ -74,6 +74,7 @@ GameObject:
   - component: {fileID: 8449637213118177184}
   - component: {fileID: 5955961093913602922}
   - component: {fileID: 6826678318335131250}
+  - component: {fileID: 2627250596664525606}
   m_Layer: 0
   m_Name: dc-17_hand_blaster
   m_TagString: Untagged
@@ -167,8 +168,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2879df971e66995b1b5b7cfbdb4915a9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Blasters
-  fireRate: 5
-  isHoldable: 0
+  fireRate: 100
+  isHoldable: 1
   isBurstable: 0
   volleysPerBurst: 3
   burstDelay: 0.08
@@ -177,7 +178,7 @@ MonoBehaviour:
     spoolTime: 0
   aimSettings:
     canAim: 1
-    zoomFactor: 1
+    zoomFactor: 2
     isScopable: 0
     scopeUIEffect: {fileID: 0}
   damage: 10
@@ -190,4 +191,18 @@ MonoBehaviour:
   projectilesPerShot: 1
   bulletPrefab: {fileID: 4528451882508599201, guid: 4f2b8c4d68996c202af98660e3c429cc, type: 3}
   bulletSpeed: 50
+  projectileRotationOffset: {x: 90, y: 0, z: 0}
   triggerThreshold: 0.1
+--- !u!114 &2627250596664525606
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5307262908997814975}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 86f04c59d6c24741189bf17df949d1da, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::WeaponHitboxProxy
+  playerManager: {fileID: 0}

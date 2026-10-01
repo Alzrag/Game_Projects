@@ -42,6 +42,9 @@ public class Blaster : MonoBehaviour
     public SpoolData spoolSettings;
     public AimData aimSettings;
 
+    [Tooltip("Speed at which the camera transitions into and out of the zoom.")]
+    public float zoomTransitionSpeed = 10f;
+
     [Header("Combat Stats")]
     public float damage = 10f;
     public float spreadX = 0.1f;
@@ -65,7 +68,7 @@ public class Blaster : MonoBehaviour
     [Tooltip("Speed inherited by the bullet prefab.")]
     public float bulletSpeed = 50f;
 
-    [Tooltip("Extra local rotation applied to spawned projectiles. Use this if your bolt mesh's long axis doesn't line up with its forward direction (e.g. 90 on X if the mesh points 'up' instead of 'forward').")]
+    [Tooltip("Extra local rotation applied to spawned projectiles.")]
     public Vector3 projectileRotationOffset = new Vector3(90f, 0f, 0f);
 
     [Header("Input Tuning")]
@@ -79,30 +82,87 @@ public class Blaster : MonoBehaviour
     private float currentSpoolTime;
     private bool isSpooledUp;
     private bool isBursting;
+    private bool isAiming;
+
+    // Camera reference variables for zooming
+    private Camera playerCamera;
+    private float defaultFOV = 60f;
+    private float targetFOV = 60f;
 
     private void Start()
     {
         currentAmmo = magazineSize;
+
+        // Automatically find the main camera for zooming
+        playerCamera = Camera.main;
+        if (playerCamera != null)
+        {
+            defaultFOV = playerCamera.fieldOfView;
+            targetFOV = defaultFOV;
+        }
     }
 
     private void Update()
     {
+        HandleAimingInput();
         HandleSpooling();
         HandleFiringInput();
         HandleReloadInput();
+        UpdateZoom();
+    }
+
+    private void HandleAimingInput()
+    {
+        if (!aimSettings.canAim)
+        {
+            isAiming = false;
+            return;
+        }
+
+        bool aimInput = false;
+
+        // Right Mouse Button for Mouse & Keyboard
+        if (Mouse.current != null)
+        {
+            aimInput |= Mouse.current.rightButton.isPressed;
+        }
+
+        // Left Trigger for Xbox-style Controller
+        if (Gamepad.current != null)
+        {
+            float leftTriggerValue = Gamepad.current.leftTrigger.ReadValue();
+            aimInput |= leftTriggerValue > triggerThreshold;
+        }
+
+        isAiming = aimInput;
+
+        // Calculate target field of view based on zoom factor
+        if (isAiming && playerCamera != null)
+        {
+            // Higher zoom factor means a smaller, more magnified field of view
+            float zoomMultiplier = aimSettings.zoomFactor > 0f ? aimSettings.zoomFactor : 2f;
+            targetFOV = defaultFOV / zoomMultiplier;
+        }
+        else if (playerCamera != null)
+        {
+            targetFOV = defaultFOV;
+        }
+    }
+
+    private void UpdateZoom()
+    {
+        if (playerCamera == null || !aimSettings.canAim) return;
+
+        // Smoothly interpolate the camera field of view toward the target value
+        playerCamera.fieldOfView = Mathf.Lerp(playerCamera.fieldOfView, targetFOV, Time.deltaTime * zoomTransitionSpeed);
     }
 
     private void HandleSpooling()
     {
         if (!spoolSettings.isSpoolable) return;
 
-        // Spool input: Right Mouse Button or Right Shoulder/Bumper
+        // Spool input: Right Shoulder/Bumper on Gamepad (since Right Click is now used for Aiming)
         bool spoolInput = false;
-
-        if (Mouse.current != null)
-        {
-            spoolInput |= Mouse.current.rightButton.isPressed;
-        }
 
         if (Gamepad.current != null)
         {
@@ -132,8 +192,8 @@ public class Blaster : MonoBehaviour
 
     private void HandleFiringInput()
     {
-        bool triggerPressed = false; // "just pressed this frame" - for burst trigger
-        bool triggerPulled = false;  // "currently held" - for holdable fire
+        bool triggerPressed = false; 
+        bool triggerPulled = false;  
 
         if (Mouse.current != null)
         {
@@ -143,7 +203,6 @@ public class Blaster : MonoBehaviour
 
         if (Gamepad.current != null)
         {
-            // Right trigger doubles as the analog "Fire1" axis and the fire button.
             float rightTriggerValue = Gamepad.current.rightTrigger.ReadValue();
             triggerPressed |= Gamepad.current.rightTrigger.wasPressedThisFrame;
             triggerPulled |= rightTriggerValue > triggerThreshold;
@@ -153,7 +212,6 @@ public class Blaster : MonoBehaviour
 
         if (isBurstable)
         {
-            // Burst triggers on initial press
             if (triggerPressed && !isBursting && Time.time >= nextFireTime)
             {
                 StartCoroutine(ExecuteBurst());
@@ -181,7 +239,6 @@ public class Blaster : MonoBehaviour
 
         if (Gamepad.current != null)
         {
-            // X button on Xbox layout / Square on PlayStation layout
             reloadPressed |= Gamepad.current.buttonWest.wasPressedThisFrame;
         }
 
@@ -253,10 +310,7 @@ public class Blaster : MonoBehaviour
                 float randomSpreadX = Random.Range(-spreadX, spreadX);
                 float randomSpreadY = Random.Range(-spreadY, spreadY);
 
-                // This is the rotation actually used for aiming/movement — no mesh offset applied.
                 Quaternion aimRotation = firePoint.rotation * Quaternion.Euler(randomSpreadX, randomSpreadY, 0f);
-
-                // This is what the spawned object is rotated to, so the mesh looks right.
                 Quaternion visualRotation = aimRotation * Quaternion.Euler(projectileRotationOffset);
 
                 GameObject bulletInstance = Instantiate(bulletPrefab, firePoint.position, visualRotation);
