@@ -33,6 +33,12 @@ namespace BF3AI
         public float crouchHeight = 1.1f;
         [NonSerialized] public bool crouched;
 
+        [Header("Pivot (where is this object's origin?)")]
+        [Tooltip("Leave ticked. If the origin is NOT at the feet (e.g. a default Unity capsule/CharacterController whose origin is mid-body), the distance from origin down to the sole of the collider is measured automatically on enable.")]
+        public bool autoFeetOffset = true;
+        [Tooltip("Distance from the object's origin DOWN to the floor under it. 0 = origin at feet. Set automatically when Auto Feet Offset is ticked; type it yourself if you untick that.")]
+        public float feetOffset = 0f;
+
         Vector3 lastPos; float nextStep;
         [NonSerialized] public Combatant lastAttacker;
         [NonSerialized] public float lastDamageTime = -99f;
@@ -40,10 +46,49 @@ namespace BF3AI
 
         public bool IsAlive { get { return health > 0f; } }
         public float CurrentHeight { get { return crouched ? crouchHeight : standingHeight; } }
-        public Vector3 Chest { get { return transform.position + Vector3.up * (CurrentHeight * 0.7f); } }
-        public Vector3 Eye { get { return transform.position + Vector3.up * (CurrentHeight - 0.15f); } }
+        /// <summary>Point on the floor under this combatant. Everything height-related is measured up from here, so the origin can be anywhere.</summary>
+        public Vector3 Feet { get { return transform.position - Vector3.up * feetOffset; } }
+        public Vector3 Chest { get { return Feet + Vector3.up * (CurrentHeight * 0.7f); } }
+        public Vector3 Eye { get { return Feet + Vector3.up * (CurrentHeight - 0.15f); } }
 
-        void OnEnable() { All.Add(this); lastPos = transform.position; }
+        void OnEnable()
+        {
+            All.Add(this); lastPos = transform.position;
+            if (autoFeetOffset) MeasureFeetOffset();
+        }
+
+        // Reads collider geometry (not Collider.bounds, which can be stale in the first frame for a CharacterController).
+        void MeasureFeetOffset()
+        {
+            float best = float.NaN;
+            float sy = Mathf.Abs(transform.lossyScale.y);
+            Collider[] cols = GetComponents<Collider>();
+            for (int i = 0; i < cols.Length; i++)
+            {
+                Collider c = cols[i];
+                if (c == null || c.isTrigger) continue;
+                float below = float.NaN;
+                CharacterController cc = c as CharacterController;
+                CapsuleCollider cap = c as CapsuleCollider;
+                BoxCollider box = c as BoxCollider;
+                SphereCollider sph = c as SphereCollider;
+                if (cc != null) below = (cc.height * 0.5f - cc.center.y) * sy;
+                else if (cap != null && cap.direction == 1) below = (Mathf.Max(cap.height * 0.5f, cap.radius) - cap.center.y) * sy;
+                else if (box != null) below = (box.size.y * 0.5f - box.center.y) * sy;
+                else if (sph != null) below = (sph.radius - sph.center.y) * sy;
+                if (float.IsNaN(below)) continue;
+                if (float.IsNaN(best) || below > best) best = below;   // lowest sole wins
+            }
+            if (float.IsNaN(best))
+            {
+                BF3Debug.W(DbgCat.Combat, "Combatant '" + name + "': Auto Feet Offset found no usable solid collider on this object (capsule/box/sphere/CharacterController), so the origin is assumed to be at the feet. Add one, or untick Auto Feet Offset and set Feet Offset by hand.", this);
+                feetOffset = 0f;
+                return;
+            }
+            feetOffset = Mathf.Max(0f, best);
+            if (feetOffset > 0.05f)
+                BF3Debug.I(DbgCat.Combat, "Combatant '" + name + "': origin is " + feetOffset.ToString("F2") + " m above the feet; chest/eye heights are corrected for it.", this);
+        }
         void OnDisable() { All.Remove(this); }
 
         void Update()

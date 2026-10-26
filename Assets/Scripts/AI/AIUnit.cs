@@ -197,11 +197,11 @@ namespace BF3AI
                 if (CanSee(c, eye))
                 {
                     Contact ct;
-                    if (!seen.TryGetValue(c, out ct)) { ct = new Contact { who = c, lastPos = c.transform.position, lastSeen = -99f }; seen[c] = ct; }
+                    if (!seen.TryGetValue(c, out ct)) { ct = new Contact { who = c, lastPos = c.Feet, lastSeen = -99f }; seen[c] = ct; }
                     bool wasVisible = ct.visible;
                     float dt = Time.time - ct.lastSeen;
-                    ct.lastVel = (dt > 0.01f && dt < 0.6f) ? (c.transform.position - ct.lastPos) / dt : Vector3.zero;
-                    ct.lastPos = c.transform.position;
+                    ct.lastVel = (dt > 0.01f && dt < 0.6f) ? (c.Feet - ct.lastPos) / dt : Vector3.zero;
+                    ct.lastPos = c.Feet;
                     ct.lastSeen = Time.time;
                     ct.visible = true;
                     if (!wasVisible && BF3Debug.On(DbgLevel.Verbose, DbgCat.Perception))
