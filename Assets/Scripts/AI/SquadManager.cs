@@ -200,10 +200,8 @@ namespace BF3AI
         public List<TeamConfig> teams = new List<TeamConfig>();
 
         [Header("Physics layers (required)")]
-        [Tooltip("Static geometry that blocks sight and bullets. Must NOT include character layers or the room-volume layer.")]
+        [Tooltip("Everything solid in the level (the same layer(s) as the CoverMap's coverMask, e.g. your merged scene model). Blocks sight AND bullets completely. Must NOT include the Player, Bots or Room layers.")]
         public LayerMask obstacleMask = ~0;
-        [Tooltip("Thin cover bullets can pass through at reduced damage (fences, crates, glass).")]
-        public LayerMask penetrableMask = 0;
 
         [Header("Platoon merging")]
         public float mergeRadius = 18f;
@@ -263,12 +261,11 @@ namespace BF3AI
             BF3Debug.Reset();
             ApplyDebugSettings();
             AIWorld.Obstacles = obstacleMask;
-            AIWorld.Penetrable = penetrableMask;
             DeathHeatmap.I = new DeathHeatmap(heatCellSize, heatHalfLifeSeconds, heatDeathsForMax);
             if (resetLearningOnStart) LearningMemory.ResetAll();
             LearningMemory.Hook();
             Grenade.Clear();
-            BF3Debug.I(DbgCat.Setup, "SquadManager awake. Obstacles=" + MaskName(obstacleMask) + " Penetrable=" + MaskName(penetrableMask), this);
+            BF3Debug.I(DbgCat.Setup, "SquadManager awake. Obstacles=" + MaskName(obstacleMask), this);
         }
 
         void Start()
@@ -371,6 +368,10 @@ namespace BF3AI
 
             // ---- character layers vs obstacleMask
             if (obstacleMask.value == 0) VWarn("obstacleMask is empty: bots can see and shoot through walls.");
+            if (cm != null && cm.coverMask.value != 0 && (obstacleMask.value & cm.coverMask.value) == 0)
+                VErr("obstacleMask does not include the CoverMap's coverMask layer(s) (" + MaskName(cm.coverMask) + "). Bots would see and shoot through your level geometry, and cover would not hide anyone. Add the level layer to obstacleMask.");
+            if (cm != null && cm.coverMask.value != 0 && (obstacleMask.value & cm.coverMask.value) != cm.coverMask.value)
+                VWarn("obstacleMask only covers part of the CoverMap's coverMask (" + MaskName(obstacleMask) + " vs " + MaskName(cm.coverMask) + "). Geometry on the missing layer(s) gives cover that does not block sight.");
             for (int t = 0; t < teams.Count; t++)
             {
                 TeamConfig cfg = teams[t];
@@ -742,7 +743,7 @@ namespace BF3AI
               .Append("  timeScale ").Append(Time.timeScale).Append("  fps~").Append((1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f)).ToString("F0")).Append('\n');
             sb.Append("errors=").Append(BF3Debug.errors).Append(" warnings=").Append(BF3Debug.warnings).Append(" exceptions=").Append(BF3Debug.exceptions)
               .Append("\nlast error: ").Append(BF3Debug.lastError).Append('\n');
-            sb.Append("obstacleMask=").Append(MaskName(obstacleMask)).Append("  penetrableMask=").Append(MaskName(penetrableMask))
+            sb.Append("obstacleMask=").Append(MaskName(obstacleMask))
               .Append("  logLevel=").Append(logLevel).Append("  categories=").Append(logCategories).Append('\n');
             CoverMap cm = CoverMap.I;
             sb.Append("CoverMap: ").Append(cm == null ? "MISSING" : cm.points.Count + " points, " + cm.rooms.Count + " rooms").Append('\n');
@@ -888,8 +889,6 @@ namespace BF3AI
     {
         /// <summary>Static geometry that blocks vision and bullets. Must NOT include character layers.</summary>
         public static LayerMask Obstacles = ~0;
-        /// <summary>Thin cover (fences, crates, glass) bullets can pass through at reduced damage.</summary>
-        public static LayerMask Penetrable = 0;
 
         static readonly RaycastHit[] buf = new RaycastHit[16];
         static readonly HitComparer cmp = new HitComparer();
@@ -911,6 +910,7 @@ namespace BF3AI
 
             Vector3 end = origin + dir * range;
             bool hit = false;
+            // every solid stops a bullet completely: there is no see-through or penetrable cover
             float dmg = damage;
             for (int i = 0; i < n; i++)
             {
@@ -924,7 +924,6 @@ namespace BF3AI
                     c.TakeDamage(dmg, shooter);
                     break;
                 }
-                if ((Penetrable.value & (1 << h.collider.gameObject.layer)) != 0) { dmg *= 0.6f; continue; }
                 end = h.point;
                 break;
             }

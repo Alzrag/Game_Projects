@@ -866,7 +866,7 @@ namespace BF3AI
             if (cp != cover)
             {
                 if (BF3Debug.On(DbgLevel.Verbose, DbgCat.Cover))
-                    BF3Debug.V(DbgCat.Cover, Tag + " takes cover at " + cp.position.ToString("F1") + " (" + (cp.IsLow ? "LOW/crouch" : "FULL/stand") + (cp.IsThin ? ", thin" : "") + ", blocks "
+                    BF3Debug.V(DbgCat.Cover, Tag + " takes cover at " + cp.position.ToString("F1") + " (" + (cp.IsLow ? "LOW/crouch" : "FULL/stand") + " h=" + cp.height.ToString("F1") + ", blocks "
                         + (threats.Count > 0 ? (cp.BlockedFraction(threats) * 100f).ToString("F0") + "% of threats" : "n/a") + ", " + Vector3.Distance(transform.position, cp.position).ToString("F0") + " m away, room "
                         + (CoverMap.I != null ? CoverMap.I.RoomName(cp.room) : "-") + ")", this, uid);
                 ReleaseCover();
@@ -1007,7 +1007,7 @@ namespace BF3AI
             if (tc.visible && exposed) fireMode = FireMode.Aimed;
             else if (unitClass == UnitClass.Sniper) fireMode = FireMode.None;   // snipers never spray blind
             else if (tc.Age < 8f && unitClass == UnitClass.Heavy) fireMode = FireMode.Suppress;
-            else if (tc.Age < 4f) fireMode = FireMode.Blind;                   // blind-fire from behind / through thin cover
+            else if (tc.Age < 4f) fireMode = FireMode.Blind;                   // blind-fire at the last-known position (over low cover / round corners); bullets stop on any solid
             else fireMode = FireMode.None;
         }
 
