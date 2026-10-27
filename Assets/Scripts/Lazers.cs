@@ -32,6 +32,9 @@ public class Lazers : MonoBehaviour
     private Vector3 previousPosition;
     private bool hasBeenInitialized;
 
+    // BF3AI: who fired this bolt (set by Blaster). Used for team checks and kill credit.
+    [HideInInspector] public BF3AI.Combatant owner;
+
     /// <summary>
     /// Called by Blaster.Shoot() right after Instantiate. Sets the bolt's
     /// speed/damage and resets its lifetime clock. Pass the intended travel
@@ -90,6 +93,18 @@ public class Lazers : MonoBehaviour
         // Snap the bolt to the exact impact point before doing anything else,
         // so effects and destruction look right.
         transform.position = hit.point;
+
+        // BF3AI: bots and the player are Combatants.
+        BF3AI.Combatant target = hit.collider.GetComponentInParent<BF3AI.Combatant>();
+        if (target != null)
+        {
+            // Your own body and teammates are ignored: the bolt keeps flying.
+            if (target == owner || (owner != null && target.team == owner.team)) return;
+            target.TakeDamage(damage, owner);
+            SpawnImpactEffect(hit.point, hit.normal);
+            Destroy(gameObject);
+            return;
+        }
 
         // Try to damage whatever we hit, if it exposes a compatible interface/component.
         IDamageable damageable = hit.collider.GetComponentInParent<IDamageable>();

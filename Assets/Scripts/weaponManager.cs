@@ -18,8 +18,12 @@ public class WeaponManager : MonoBehaviour
     public bool activeWeapon = true; // true = primary active, false = secondary active
     private bool oldActiveHand;
 
+    private BF3AI.Combatant combatant;   // BF3AI: the player's Combatant
+
     void Start()
     {
+        combatant = GetComponentInParent<BF3AI.Combatant>();
+
         if (playerMov != null)
         {
             activeHand = playerMov.hand;
@@ -27,6 +31,7 @@ public class WeaponManager : MonoBehaviour
         oldActiveHand = activeHand;
         
         LoadSelectedWeapon();
+        UpdateThreatFlags();   // BF3AI: after the weapons exist
     }
 
     void Update()
@@ -78,6 +83,16 @@ public class WeaponManager : MonoBehaviour
     {
         if (primaryWeapon != null) primaryWeapon.SetActive(activeWeapon);
         if (secondaryWeapon != null) secondaryWeapon.SetActive(!activeWeapon);
+        UpdateThreatFlags();   // BF3AI
+    }
+
+    // BF3AI: bots prioritise players holding a heavy (spool-up) weapon
+    void UpdateThreatFlags()
+    {
+        if (combatant == null) return;
+        GameObject w = activeWeapon ? primaryWeapon : secondaryWeapon;
+        Blaster b = w != null ? w.GetComponentInChildren<Blaster>() : null;
+        combatant.usingHeavyWeapon = b != null && b.spoolSettings.isSpoolable;
     }
 
     void LoadSelectedWeapon()

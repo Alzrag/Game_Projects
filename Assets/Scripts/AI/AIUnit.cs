@@ -459,7 +459,7 @@ namespace BF3AI
             if (profile == null || personality == null)
             {
                 if (BF3Debug.Allow("nobegin" + uid, 5f))
-                    BF3Debug.E(DbgCat.Setup, Tag + " is active but BeginLife was never called (no profile/personality). Bots must be spawned by SquadManager, not placed by hand.", this, uid);
+                    BF3Debug.E(DbgCat.Setup, Tag + " on scene object '" + name + "' is active but BeginLife was never called (no profile/personality). This bot was placed by hand or is a spawned bot whose spawn failed: delete it from the Hierarchy (bots must be spawned by SquadManager from the Unit Prefab), or remove the AIUnit component if this is your player.", this, uid);
                 return;
             }
             if (Time.time < faultedUntil) { frozen = true; return; }
@@ -920,9 +920,15 @@ namespace BF3AI
             NavMeshHit nh;
             if (!NavMesh.SamplePosition(p, out nh, 4f, NavMesh.AllAreas))
             {
-                if (BF3Debug.Allow("nonav" + uid, 3f))
-                    BF3Debug.W(DbgCat.Movement, Tag + " destination " + p.ToString("F1") + " has no NavMesh within 4 m (mode " + mode + "). Ignored.", this, uid);
-                return;
+                // e.g. the player stands on a ledge/prop the NavMesh doesn't cover: go to the nearest walkable spot instead of freezing
+                if (!NavMesh.SamplePosition(p, out nh, 16f, NavMesh.AllAreas))
+                {
+                    if (BF3Debug.Allow("nonav" + uid, 3f))
+                        BF3Debug.W(DbgCat.Movement, Tag + " destination " + p.ToString("F1") + " has no NavMesh within 16 m (mode " + mode + "). Ignored. Is that spot outside the baked NavMesh?", this, uid);
+                    return;
+                }
+                if (BF3Debug.Allow("navfar" + uid, 5f))
+                    BF3Debug.V(DbgCat.Movement, Tag + " destination " + p.ToString("F1") + " is off the NavMesh; using nearest walkable point " + nh.position.ToString("F1") + " (" + nh.distance.ToString("F1") + " m away).", this, uid);
             }
             lastDest = p; lastDestTime = Time.time;
             agent.isStopped = false;

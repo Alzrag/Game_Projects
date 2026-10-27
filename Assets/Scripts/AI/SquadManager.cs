@@ -40,6 +40,13 @@ namespace BF3AI
         public static int errors, warnings, exceptions;
         public static string lastError = "";
 
+        // ---- continuous log file (everything, all session). Controlled from SquadManager's "Continuous log file" settings.
+        public static DbgLevel fileLevel = DbgLevel.Verbose;
+        public static DbgCat fileMask = DbgCat.All;
+        public static string filePath = "";
+        static StreamWriter fw;
+        public static bool FileActive { get { return fw != null; } }
+
         public struct Entry { public float time; public int frame; public DbgLevel lvl; public DbgCat cat; public int uid; public string msg; }
         static Entry[] ring = new Entry[3000];
         static int head, count;
@@ -50,6 +57,7 @@ namespace BF3AI
 
         public static void Reset()
         {
+            CloseFile();
             head = 0; count = 0; errors = 0; warnings = 0; exceptions = 0; lastError = "";
             exInfo.Clear(); throttle.Clear();
         }
@@ -64,7 +72,61 @@ namespace BF3AI
         }
 
         /// <summary>Use before building an expensive message: if (BF3Debug.On(DbgLevel.Verbose, DbgCat.Cover)) ...</summary>
-        public static bool On(DbgLevel l, DbgCat c) { return l <= level && (mask & c) != 0; }
+        public static bool On(DbgLevel l, DbgCat c) { return (l <= level && (mask & c) != 0) || (fw != null && l <= fileLevel && (fileMask & c) != 0); }
+
+        /// <summary>Opens a new timestamped log file in the persistent data folder. Returns false (and logs why) on failure.</summary>
+        public static bool OpenFile(string header)
+        {
+            CloseFile();
+            try
+            {
+                filePath = Path.Combine(Application.persistentDataPath, "BF3AI_log_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".txt");
+                fw = new StreamWriter(filePath, false, new UTF8Encoding(false));
+                fw.WriteLine("BF3AI CONTINUOUS LOG");
+                fw.WriteLine(header);
+                fw.WriteLine("Columns: time  frame  level(E/W/I/V)  category  [#unit]  message.   '=== STATE' blocks are periodic snapshots of every platoon/squad/unit.");
+                fw.WriteLine();
+                fw.Flush();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                fw = null;
+                Debug.LogError("[BF3AI] could not open the continuous log file (" + filePath + "): " + ex.Message);
+                return false;
+            }
+        }
+
+        public static void CloseFile()
+        {
+            if (fw == null) return;
+            try { fw.Flush(); fw.Close(); } catch { }
+            fw = null;
+        }
+
+        public static void FlushFile()
+        {
+            if (fw == null) return;
+            try { fw.Flush(); } catch { fw = null; }
+        }
+
+        /// <summary>Writes a block of text (e.g. a state snapshot) straight into the log file. No-op when file logging is off.</summary>
+        public static void FileRaw(string text)
+        {
+            if (fw == null) return;
+            try { fw.WriteLine(text); } catch (Exception ex) { fw = null; Debug.LogError("[BF3AI] log file write failed, file logging stopped: " + ex.Message); }
+        }
+
+        static void ToFile(Entry e)
+        {
+            if (fw == null) return;
+            try
+            {
+                fw.WriteLine(Format(e));
+                if (e.lvl == DbgLevel.Error) fw.Flush();          // never lose an error to a crash
+            }
+            catch (Exception ex) { fw = null; Debug.LogError("[BF3AI] log file write failed, file logging stopped: " + ex.Message); }
+        }
 
         /// <summary>Rate limiter for repeating warnings. True = go ahead and log.</summary>
         public static bool Allow(string key, float seconds)
@@ -84,12 +146,16 @@ namespace BF3AI
         public static void Log(DbgLevel l, DbgCat c, string msg, UnityEngine.Object ctx = null, int uid = 0)
         {
             bool force = l <= DbgLevel.Warn;                 // errors and warnings are ALWAYS recorded, whatever the filter says
-            if (!force && !On(l, c)) return;
+            bool display = force || (l <= level && (mask & c) != 0);
+            bool file = fw != null && (force || (l <= fileLevel && (fileMask & c) != 0));
+            if (!display && !file) return;
             if (l == DbgLevel.Error) { errors++; lastError = msg; }
             else if (l == DbgLevel.Warn) warnings++;
-            Store(new Entry { time = Time.time, frame = Time.frameCount, lvl = l, cat = c, uid = uid, msg = msg });
+            Entry en = new Entry { time = Time.time, frame = Time.frameCount, lvl = l, cat = c, uid = uid, msg = msg };
+            if (display) Store(en);
+            if (file) ToFile(en);
 
-            if (!echoToConsole || l > level) return;
+            if (!display || !echoToConsole || l > level) return;
             string line = "[BF3AI/" + c + "] " + msg;
             if (l == DbgLevel.Error) Debug.LogError(line, ctx);
             else if (l == DbgLevel.Warn) Debug.LogWarning(line, ctx);
@@ -99,7 +165,8 @@ namespace BF3AI
         /// <summary>Always recorded and always echoed, but is NOT counted as an error/warning. For "report written" style notices.</summary>
         public static void Note(DbgCat c, string msg, UnityEngine.Object ctx = null)
         {
-            Store(new Entry { time = Time.time, frame = Time.frameCount, lvl = DbgLevel.Info, cat = c, uid = 0, msg = msg });
+            Entry en = new Entry { time = Time.time, frame = Time.frameCount, lvl = DbgLevel.Info, cat = c, uid = 0, msg = msg };
+            Store(en); ToFile(en);
             if (echoToConsole) Debug.Log("[BF3AI/" + c + "] " + msg, ctx);
         }
 
@@ -224,6 +291,17 @@ namespace BF3AI
         public DbgLevel logLevel = DbgLevel.Info;
         public DbgCat logCategories = DbgCat.All;
         public bool echoToConsole = true;
+
+        [Header("Continuous log file  (writes EVERYTHING, all session, not just on errors)")]
+        [Tooltip("ON: a new BF3AI_log_<time>.txt is written continuously while you play (flushed every second, errors instantly). OFF: only the error/F9 reports are written. Can be toggled while playing.")]
+        public bool logToFile = true;
+        [Tooltip("Detail level written to the file. Verbose = every decision (largest, best for 'why did they stop?' questions). Independent of the Console's Log Level.")]
+        public DbgLevel fileLogLevel = DbgLevel.Verbose;
+        public DbgCat fileLogCategories = DbgCat.All;
+        [Tooltip("Every N seconds a full snapshot of every platoon, squad and unit (mode, order, target, cover, path state) plus the player is written into the file. 0 = no snapshots. Roughly 5 KB per snapshot with 12 bots.")]
+        public float fileSnapshotInterval = 2f;
+
+        [Header("Debug tools")]
         [Tooltip("How many log events the black-box recorder keeps.")]
         public int logHistory = 3000;
         public bool validateOnStart = true;
@@ -238,7 +316,8 @@ namespace BF3AI
         [Tooltip("Optional: drag a bot here to always show its snapshot + log in the overlay.")]
         public AIUnit focusUnit;
 
-        float nextMgmt, nextOverlay, nextHeartbeat, nextAutoDump;
+        float nextMgmt, nextOverlay, nextHeartbeat, nextAutoDump, nextSnapshot, nextFlush;
+        bool fileOpenFailed;
         int errorsAtLastDump;
         string overlayText = "";
         string lastReportPath = "";
@@ -283,12 +362,36 @@ namespace BF3AI
         void OnApplicationQuit()
         {
             if (autoDumpOnError && BF3Debug.errors > errorsAtLastDump) DumpReport("quit with errors");
+            if (BF3Debug.FileActive)
+            {
+                try { WriteSnapshot(); } catch { }
+                BF3Debug.FileRaw("---- session ended: errors=" + BF3Debug.errors + " warnings=" + BF3Debug.warnings + " exceptions=" + BF3Debug.exceptions);
+                BF3Debug.CloseFile();
+            }
         }
+
+        void OnApplicationPause(bool paused) { if (paused) BF3Debug.FlushFile(); }
 
         void ApplyDebugSettings()
         {
             BF3Debug.level = logLevel; BF3Debug.mask = logCategories; BF3Debug.echoToConsole = echoToConsole;
+            BF3Debug.fileLevel = fileLogLevel; BF3Debug.fileMask = fileLogCategories;
             BF3Debug.SetCapacity(logHistory);
+
+            // the file can be switched on/off while playing
+            if (logToFile && !BF3Debug.FileActive && !fileOpenFailed)
+            {
+                string hdr = "Unity " + Application.unityVersion + "  scene '" + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name + "'  started " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                           + "\nfile level=" + fileLogLevel + " categories=" + fileLogCategories + " snapshots every " + fileSnapshotInterval.ToString("F1") + "s; console level=" + logLevel;
+                if (BF3Debug.OpenFile(hdr)) BF3Debug.Note(DbgCat.Setup, "LOG FILE (continuous): " + BF3Debug.filePath, this);
+                else { fileOpenFailed = true; BF3Debug.E(DbgCat.Setup, "Could not open the continuous log file; file logging is off. See the error above.", this); }
+            }
+            else if (!logToFile && BF3Debug.FileActive)
+            {
+                BF3Debug.Note(DbgCat.Setup, "continuous log file closed: " + BF3Debug.filePath, this);
+                BF3Debug.CloseFile();
+            }
+            if (logToFile == false) fileOpenFailed = false;   // re-ticking the box retries
         }
 
         static string MaskName(LayerMask m)
@@ -382,12 +485,18 @@ namespace BF3AI
                 if (c.isPlayer && ((1 << c.gameObject.layer) & obstacleMask.value) != 0)
                     VErr("obstacleMask includes the player's layer '" + LayerMask.LayerToName(c.gameObject.layer) + "'. Bots could never see you. Restrict obstacleMask to static geometry.");
 
+            // ---- hand-placed bots (AIUnits that were never started by SquadManager)
+            foreach (AIUnit au in FindAll<AIUnit>())
+                if (au != null && au.gameObject.scene.IsValid() && au.profile == null)
+                    VErr("AIUnit on scene object '" + au.name + "' was placed by hand (it is not a spawned bot). Delete it from the Hierarchy: bots must come from the Unit Prefab in the Teams list. (If this is your player, remove the AIUnit component from it.)");
+
             // ---- teams
             if (teams.Count == 0) VErr("SquadManager has no teams configured.");
             for (int t = 0; t < teams.Count; t++)
             {
                 TeamConfig cfg = teams[t]; string tn = "Team " + cfg.team + ": ";
                 if (cfg.team == 0) VErr(tn + "team 0 is reserved for the player. Bots on team 0 would be friendly to you.");
+                if (cfg.squadsPerTeam < 1) VErr(tn + "Squads Per Team is " + cfg.squadsPerTeam + ", so NOTHING will spawn. Set it to 1-3 in the SquadManager's Teams entry.");
                 for (int j = t + 1; j < teams.Count; j++) if (teams[j].team == cfg.team) VWarn(tn + "duplicate team id in the Teams list.");
 
                 if (cfg.unitPrefab == null) { VErr(tn + "unitPrefab is empty."); }
@@ -450,7 +559,15 @@ namespace BF3AI
             }
             UnitClass[] roster = { UnitClass.Assault, UnitClass.Heavy, UnitClass.Sniper, UnitClass.Officer };
 
-            for (int s = 0; s < cfg.squadsPerTeam; s++)
+            int squadCount = cfg.squadsPerTeam;
+            if (squadCount < 1)
+            {
+                BF3Debug.W(DbgCat.Spawn, "Team " + cfg.team + ": Squads Per Team is " + squadCount + "; using 1 so something spawns. Set it to 1-3 in the inspector.", this);
+                squadCount = 1;
+            }
+            BF3Debug.I(DbgCat.Spawn, "Spawning team " + cfg.team + ": " + squadCount + " squad(s) from prefab '" + cfg.unitPrefab.name + "' at " + cfg.spawnPoints.Length + " spawn point(s).", this);
+
+            for (int s = 0; s < squadCount; s++)
             {
                 Squad squad = new Squad(cfg.team);
                 Transform sp = cfg.spawnPoints[s % cfg.spawnPoints.Length];
@@ -548,6 +665,17 @@ namespace BF3AI
                 }
                 sb.Append("errors=").Append(BF3Debug.errors).Append(" warnings=").Append(BF3Debug.warnings).Append(" exceptions=").Append(BF3Debug.exceptions);
                 BF3Debug.I(DbgCat.Setup, sb.ToString(), this);
+            }
+
+            if (BF3Debug.FileActive)
+            {
+                if (fileSnapshotInterval > 0f && Time.time >= nextSnapshot)
+                {
+                    nextSnapshot = Time.time + fileSnapshotInterval;
+                    try { WriteSnapshot(); }
+                    catch (Exception e) { BF3Debug.Exception("WriteSnapshot", e, null, this); }
+                }
+                if (Time.unscaledTime >= nextFlush) { nextFlush = Time.unscaledTime + 1f; BF3Debug.FlushFile(); }
             }
 
             if (autoDumpOnError && BF3Debug.errors > errorsAtLastDump && Time.unscaledTime >= nextAutoDump)
@@ -734,25 +862,8 @@ namespace BF3AI
             }
         }
 
-        string BuildReport(string why)
+        void AppendUnits(StringBuilder sb)
         {
-            StringBuilder sb = new StringBuilder(32768);
-            sb.Append("BF3AI REPORT  (").Append(why).Append(")\n");
-            sb.Append("Unity ").Append(Application.unityVersion).Append("  scene '").Append(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name)
-              .Append("'  t=").Append(Time.time.ToString("F1")).Append("s  frame ").Append(Time.frameCount)
-              .Append("  timeScale ").Append(Time.timeScale).Append("  fps~").Append((1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f)).ToString("F0")).Append('\n');
-            sb.Append("errors=").Append(BF3Debug.errors).Append(" warnings=").Append(BF3Debug.warnings).Append(" exceptions=").Append(BF3Debug.exceptions)
-              .Append("\nlast error: ").Append(BF3Debug.lastError).Append('\n');
-            sb.Append("obstacleMask=").Append(MaskName(obstacleMask))
-              .Append("  logLevel=").Append(logLevel).Append("  categories=").Append(logCategories).Append('\n');
-            CoverMap cm = CoverMap.I;
-            sb.Append("CoverMap: ").Append(cm == null ? "MISSING" : cm.points.Count + " points, " + cm.rooms.Count + " rooms").Append('\n');
-
-            sb.Append("\n==== SETUP VALIDATION ====\n");
-            if (validation.Count == 0) sb.Append("(not run)\n");
-            for (int i = 0; i < validation.Count; i++) sb.Append(validation[i]).Append('\n');
-
-            sb.Append("\n==== PLATOONS / SQUADS / UNITS ====\n");
             for (int t = 0; t < teams.Count; t++)
             {
                 sb.Append("-- team ").Append(teams[t].team).Append('\n');
@@ -774,6 +885,43 @@ namespace BF3AI
                     }
                 }
             }
+        }
+
+        // Periodic full-state block for the continuous log file: lets you see what every bot was doing at any moment.
+        void WriteSnapshot()
+        {
+            StringBuilder sb = new StringBuilder(8192);
+            sb.Append("=== STATE t=").Append(Time.time.ToString("F1")).Append("s f").Append(Time.frameCount)
+              .Append("  fps~").Append((1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f)).ToString("F0")).Append(" ===\n");
+            foreach (Combatant c in Combatant.All)
+                if (c != null && c.isPlayer)
+                    sb.Append("PLAYER '").Append(c.name).Append("' team ").Append(c.team).Append(c.IsAlive ? " alive" : " DEAD").Append(" hp ").Append(c.health.ToString("F0"))
+                      .Append(" pos ").Append(c.transform.position.ToString("F1")).Append(" feet ").Append(c.Feet.ToString("F1")).Append(" layer ").Append(LayerMask.LayerToName(c.gameObject.layer)).Append('\n');
+            AppendUnits(sb);
+            BF3Debug.FileRaw(sb.ToString());
+        }
+
+        string BuildReport(string why)
+        {
+            StringBuilder sb = new StringBuilder(32768);
+            sb.Append("BF3AI REPORT  (").Append(why).Append(")\n");
+            sb.Append("Unity ").Append(Application.unityVersion).Append("  scene '").Append(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name)
+              .Append("'  t=").Append(Time.time.ToString("F1")).Append("s  frame ").Append(Time.frameCount)
+              .Append("  timeScale ").Append(Time.timeScale).Append("  fps~").Append((1f / Mathf.Max(Time.unscaledDeltaTime, 0.0001f)).ToString("F0")).Append('\n');
+            sb.Append("errors=").Append(BF3Debug.errors).Append(" warnings=").Append(BF3Debug.warnings).Append(" exceptions=").Append(BF3Debug.exceptions)
+              .Append("\nlast error: ").Append(BF3Debug.lastError).Append('\n');
+            if (BF3Debug.FileActive) sb.Append("continuous log: ").Append(BF3Debug.filePath).Append('\n');
+            sb.Append("obstacleMask=").Append(MaskName(obstacleMask))
+              .Append("  logLevel=").Append(logLevel).Append("  categories=").Append(logCategories).Append('\n');
+            CoverMap cm = CoverMap.I;
+            sb.Append("CoverMap: ").Append(cm == null ? "MISSING" : cm.points.Count + " points, " + cm.rooms.Count + " rooms").Append('\n');
+
+            sb.Append("\n==== SETUP VALIDATION ====\n");
+            if (validation.Count == 0) sb.Append("(not run)\n");
+            for (int i = 0; i < validation.Count; i++) sb.Append(validation[i]).Append('\n');
+
+            sb.Append("\n==== PLATOONS / SQUADS / UNITS ====\n");
+            AppendUnits(sb);
 
             sb.Append("\n==== LEARNING ====\n");
             for (int t = 0; t < teams.Count; t++)

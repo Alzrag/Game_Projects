@@ -84,10 +84,18 @@ public class Blaster : MonoBehaviour
     private bool isBursting;
     private bool isAiming;
 
+    // BF3AI: the Combatant (on the player) that owns this weapon; used for team, kill credit and gunshot noise
+    private BF3AI.Combatant owner;
+
     // Camera reference variables for zooming
     private Camera playerCamera;
     private float defaultFOV = 60f;
     private float targetFOV = 60f;
+
+    private void Awake()
+    {
+        owner = GetComponentInParent<BF3AI.Combatant>();
+    }
 
     private void Start()
     {
@@ -303,6 +311,9 @@ public class Blaster : MonoBehaviour
     {
         if (firePoints.Count == 0 || bulletPrefab == null) return;
 
+        // BF3AI: let nearby bots hear the shot
+        BF3AI.SoundBus.Emit(firePoints[0].position, 70f, owner != null ? owner.team : 0, BF3AI.SoundType.Gunshot);
+
         foreach (Transform firePoint in firePoints)
         {
             for (int i = 0; i < projectilesPerShot; i++)
@@ -319,6 +330,7 @@ public class Blaster : MonoBehaviour
                 if (bolt != null)
                 {
                     bolt.Initialize(bulletSpeed, damage, aimRotation * Vector3.forward);
+                    bolt.owner = owner;   // BF3AI: credit kills to the shooter, skip friendly fire
                 }
                 else
                 {
