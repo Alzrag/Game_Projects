@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Text;
 using UnityEngine;
 using UnityEngine.AI;
@@ -22,6 +24,18 @@ namespace BF3AI
         public float health, walkSpeed, runSpeed, damage, shotsPerSecond, spreadDeg, idealMin, idealMax, viewRange;
         public int grenades;
 
+        // ---- weapon fields (overwritten by the unit's Loadout each life; the defaults below behave like the old hitscan bots)
+        public float weaponSpread;                 // degrees ADDED to the bot's aim error
+        public int magazine = 999;                 // >100 = infinite
+        public float reload = 2f;
+        public float weaponRange;                  // 0 = viewRange * 1.2
+        public float bulletSpeed;                  // 0 = from the weapon / 60
+        public int pellets = 1;                    // projectiles per firepoint per trigger pull
+        public int burst = 1;
+        public float burstDelay = 0.08f;
+        public float spoolTime;
+        public float Range { get { return weaponRange > 0f ? weaponRange : viewRange * 1.2f; } }
+
         public static ClassProfile For(UnitClass c)
         {
             switch (c)
@@ -35,6 +49,267 @@ namespace BF3AI
                 default:
                     return new ClassProfile { health = 100, walkSpeed = 3.6f, runSpeed = 6.5f, damage = 12, shotsPerSecond = 6f, spreadDeg = 2.5f, idealMin = 6, idealMax = 22, viewRange = 70, grenades = 2 };
             }
+        }
+    }
+
+    // =====================================================================================================
+    //  WEAPON LOADOUTS  -  per-class weapon stats stored in a CSV (Assets/StreamingAssets/BF3AI_Loadouts.csv)
+    //  Each life a bot picks one row at random (weighted) among rows for its class; if its class has none it
+    //  uses the 'Any' rows; if there are none at all it uses the built-in class defaults. Save rows straight
+    //  from your Blaster (component menu > BF3AI > Save As Bot Loadout) or edit the CSV by hand.
+    // =====================================================================================================
+    public enum LoadoutClass { Any = 0, Assault = 1, Heavy = 2, Sniper = 3, Officer = 4 }
+
+    public class Loadout
+    {
+        public string id = "unnamed";
+        public LoadoutClass cls = LoadoutClass.Any;
+        public float weight = 1f;
+        public string weapon = "";        // weapon prefab name under Resources/<weaponsPath>/ (same prefabs your WeaponManager loads). Empty = no model, generated tracer
+        public float fireRate = 6f;       // trigger pulls per second
+        public float damage = 10f;
+        public float spread = 0f;         // weapon spread in degrees, ADDED on top of the bot's own aim error
+        public int magazine = 999;        // >100 = infinite (same rule as Blaster)
+        public float reload = 2f;         // seconds
+        public float range = 0f;          // metres, 0 = class default (view range x 1.2)
+        public float bulletSpeed = 0f;    // m/s, 0 = take from the weapon's Blaster (or 60)
+        public int projectiles = 1;       // per firepoint per trigger pull
+        public int burst = 1;             // trigger pulls fired back to back
+        public float burstDelay = 0.08f;
+        public float spool = 0f;          // seconds of continuous firing intent before the first shot (heavy weapons)
+
+        public static LoadoutClass ToLoadoutClass(UnitClass c)
+        {
+            switch (c) { case UnitClass.Heavy: return LoadoutClass.Heavy; case UnitClass.Sniper: return LoadoutClass.Sniper; case UnitClass.Officer: return LoadoutClass.Officer; default: return LoadoutClass.Assault; }
+        }
+
+        /// <summary>The built-in per-class weapon (identical to the old hardcoded bot stats).</summary>
+        public static Loadout DefaultFor(UnitClass c)
+        {
+            ClassProfile p = ClassProfile.For(c);
+            return new Loadout { id = "built-in " + c, cls = ToLoadoutClass(c), fireRate = p.shotsPerSecond, damage = p.damage, spread = 0f, magazine = 999, reload = 2f };
+        }
+
+        public override string ToString()
+        {
+            return "'" + id + "' [" + cls + " w" + weight.ToString("0.##", CultureInfo.InvariantCulture) + "] weapon=" + (string.IsNullOrEmpty(weapon) ? "(none)" : weapon)
+                 + " rate " + fireRate.ToString("0.##", CultureInfo.InvariantCulture) + "/s dmg " + damage.ToString("0.##", CultureInfo.InvariantCulture)
+                 + " spread " + spread.ToString("0.##", CultureInfo.InvariantCulture) + " mag " + magazine + " reload " + reload.ToString("0.##", CultureInfo.InvariantCulture)
+                 + "s range " + (range > 0f ? range.ToString("0") : "default") + " speed " + (bulletSpeed > 0f ? bulletSpeed.ToString("0") : "weapon")
+                 + " pellets " + projectiles + " burst " + burst + " spool " + spool.ToString("0.##", CultureInfo.InvariantCulture);
+        }
+    }
+
+    public static class LoadoutStore
+    {
+        public static readonly string[] Columns = { "id", "class", "weight", "weapon", "fireRate", "damage", "spread", "magazine", "reload", "range", "bulletSpeed", "projectiles", "burst", "burstDelay", "spool" };
+        public static readonly List<Loadout> all = new List<Loadout>();
+        public static string fileName = "BF3AI_Loadouts.csv";
+        public static string weaponsPath = "Weapons";
+        public static string path = "";
+        public static int badRows;
+        /// <summary>Set by Save(): names any columns that could not be stored because the CSV's header row lacks them.</summary>
+        public static string lastSaveNote = "";
+        static readonly CultureInfo inv = CultureInfo.InvariantCulture;
+
+        public static string PathFor(string file) { return Path.Combine(Application.streamingAssetsPath, file); }
+
+        const string ExampleHelp =
+            "# BF3AI weapon loadouts. One row = one weapon set-up. Each life every bot picks one row at random (weighted) among the rows for its class.\n" +
+            "# class: Assault | Heavy | Sniper | Officer | Any.  'Any' rows are used only for classes that have no row of their own.  weight: relative chance (0 = disabled).\n" +
+            "# weapon: name of a weapon prefab in Assets/Resources/<Weapons folder>/ (the same prefabs WeaponManager loads). Leave empty for no model (a generated tracer is used).\n" +
+            "# fireRate: trigger pulls per second. spread: weapon spread in degrees, added to the bot's own aim error. magazine: >100 = infinite. range: metres, 0 = class default.\n" +
+            "# bulletSpeed: m/s, 0 = from the weapon's Blaster. projectiles: per firepoint per pull (shotguns). burst/burstDelay: pulls per burst. spool: seconds before first shot.\n" +
+            "# Lines starting with # are ignored. Columns can be in any order as long as the header row names them. After editing, restart play mode (or use the SquadManager menu: BF3AI > Reload Loadouts CSV).\n";
+
+        const string ExampleRows =
+            "assault_carbine,Assault,3,,6,12,0,30,2,0,0,1,1,0.08,0\n" +
+            "assault_burst,Assault,2,,4,14,0.3,24,2.2,0,0,1,3,0.07,0\n" +
+            "assault_scatter,Assault,1,,1.2,7,2.5,8,2.5,25,0,5,1,0.08,0\n" +
+            "heavy_lmg,Heavy,3,,12,9,0.8,300,4,0,0,1,1,0.08,0.8\n" +
+            "heavy_repeater,Heavy,1,,8,13,0.4,60,3.5,0,0,1,1,0.08,0.5\n" +
+            "sniper_rifle,Sniper,3,,0.7,60,0,5,3,0,90,1,1,0.08,0\n" +
+            "officer_pistol,Officer,3,,5,14,0.2,24,2,0,0,1,1,0.08,0\n" +
+            "officer_burst,Officer,1,,3,15,0.2,30,2.4,0,0,1,3,0.09,0\n" +
+            "any_fallback,Any,1,,6,11,0,30,2,0,0,1,1,0.08,0\n";
+
+        public static string ExampleText() { return ExampleHelp.Replace("\\n", "\n") + string.Join(",", Columns) + "\n" + ExampleRows.Replace("\\n", "\n"); }
+
+        public static void WriteExample(string p)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(p));
+            File.WriteAllText(p, ExampleText(), new UTF8Encoding(false));
+        }
+
+        static List<string> SplitCsv(string line)
+        {
+            List<string> r = new List<string>(); StringBuilder sb = new StringBuilder(); bool q = false;
+            for (int i = 0; i < line.Length; i++)
+            {
+                char ch = line[i];
+                if (q) { if (ch == '"') { if (i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; } else q = false; } else sb.Append(ch); }
+                else if (ch == '"') q = true;
+                else if (ch == ',') { r.Add(sb.ToString().Trim()); sb.Length = 0; }
+                else sb.Append(ch);
+            }
+            r.Add(sb.ToString().Trim());
+            return r;
+        }
+
+        /// <summary>A header row names the columns: it contains 'id' plus at least one other known column name.</summary>
+        static bool IsHeader(List<string> c)
+        {
+            bool hasId = false, other = false;
+            for (int i = 0; i < c.Count; i++)
+            {
+                if (c[i].Equals("id", StringComparison.OrdinalIgnoreCase)) { hasId = true; continue; }
+                for (int k = 1; k < Columns.Length; k++) if (c[i].Equals(Columns[k], StringComparison.OrdinalIgnoreCase)) other = true;
+            }
+            return hasId && other;
+        }
+
+        static string Q(string v) { return v != null && (v.IndexOf(',') >= 0 || v.IndexOf('"') >= 0) ? "\"" + v.Replace("\"", "\"\"") + "\"" : v; }
+
+        /// <summary>Loads the CSV (creating an example file if it does not exist). Returns the number of valid rows.</summary>
+        public static int Load(string file, bool createIfMissing)
+        {
+            all.Clear(); badRows = 0; fileName = file; path = PathFor(file);
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    if (!createIfMissing) { BF3Debug.W(DbgCat.Setup, "Loadout file not found: " + path + ". Bots use the built-in class weapons."); return 0; }
+                    WriteExample(path);
+                    BF3Debug.I(DbgCat.Setup, "Loadout file did not exist; wrote an example you can edit: " + path);
+                }
+                string[] lines = File.ReadAllLines(path);
+                Dictionary<string, int> col = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < Columns.Length; i++) col[Columns[i]] = i;      // default order until a header says otherwise
+                for (int li = 0; li < lines.Length; li++)
+                {
+                    string ln = lines[li].Trim();
+                    if (ln.Length == 0 || ln[0] == '#') continue;
+                    List<string> c = SplitCsv(ln);
+                    if (IsHeader(c))
+                    {
+                        col.Clear();
+                        for (int i = 0; i < c.Count; i++) if (c[i].Length > 0) col[c[i]] = i;
+                        continue;
+                    }
+                    Loadout lo; string why;
+                    if (!ParseRow(c, col, out lo, out why)) { badRows++; BF3Debug.W(DbgCat.Setup, "Loadout file line " + (li + 1) + " skipped: " + why + "   [" + ln + "]"); continue; }
+                    if (lo.weight <= 0f) { BF3Debug.V(DbgCat.Setup, "Loadout '" + lo.id + "' has weight 0: disabled."); continue; }
+                    bool dup = false;
+                    for (int i = 0; i < all.Count; i++) if (all[i].id.Equals(lo.id, StringComparison.OrdinalIgnoreCase)) dup = true;
+                    if (dup) BF3Debug.W(DbgCat.Setup, "Loadout id '" + lo.id + "' appears twice (line " + (li + 1) + "); both rows are kept.");
+                    all.Add(lo);
+                }
+                int[] per = new int[5];
+                for (int i = 0; i < all.Count; i++) per[(int)all[i].cls]++;
+                BF3Debug.I(DbgCat.Setup, "Loadouts: " + all.Count + " row(s) from " + path + "  (Assault " + per[1] + ", Heavy " + per[2] + ", Sniper " + per[3] + ", Officer " + per[4] + ", Any " + per[0] + ")" + (badRows > 0 ? "  " + badRows + " bad row(s) skipped, see warnings" : ""));
+            }
+            catch (Exception e) { BF3Debug.Exception("LoadoutStore.Load " + path, e, null, null); }
+            return all.Count;
+        }
+
+        static bool ParseRow(List<string> c, Dictionary<string, int> col, out Loadout lo, out string why)
+        {
+            lo = new Loadout(); why = "";
+            Func<string, string> get = delegate (string n) { int i; return col.TryGetValue(n, out i) && i < c.Count ? c[i] : ""; };
+            Func<string, float, float> num = delegate (string n, float def)
+            {
+                string v = get(n); if (v.Length == 0) return def;
+                float f; return float.TryParse(v, NumberStyles.Float, inv, out f) ? f : float.NaN;
+            };
+            lo.id = get("id");
+            if (lo.id.Length == 0) { why = "empty id"; return false; }
+            string cl = get("class");
+            if (cl.Length > 0)
+            {
+                LoadoutClass parsed;
+                if (!Enum.TryParse(cl, true, out parsed) || !Enum.IsDefined(typeof(LoadoutClass), parsed)) { why = "unknown class '" + cl + "' (use Assault, Heavy, Sniper, Officer or Any)"; return false; }
+                lo.cls = parsed;
+            }
+            lo.weapon = get("weapon");
+            lo.weight = num("weight", 1f); lo.fireRate = num("fireRate", 6f); lo.damage = num("damage", 10f); lo.spread = num("spread", 0f);
+            float mag = num("magazine", 999f); lo.reload = num("reload", 2f); lo.range = num("range", 0f); lo.bulletSpeed = num("bulletSpeed", 0f);
+            float proj = num("projectiles", 1f), burst = num("burst", 1f); lo.burstDelay = num("burstDelay", 0.08f); lo.spool = num("spool", 0f);
+            float[] chk = { lo.weight, lo.fireRate, lo.damage, lo.spread, mag, lo.reload, lo.range, lo.bulletSpeed, proj, burst, lo.burstDelay, lo.spool };
+            string[] nm = { "weight", "fireRate", "damage", "spread", "magazine", "reload", "range", "bulletSpeed", "projectiles", "burst", "burstDelay", "spool" };
+            for (int i = 0; i < chk.Length; i++)
+                if (float.IsNaN(chk[i]) || float.IsInfinity(chk[i]) || chk[i] < 0f) { why = "'" + nm[i] + "' is not a valid non-negative number"; return false; }
+            if (lo.fireRate <= 0f) { why = "fireRate must be above 0"; return false; }
+            lo.magazine = Mathf.Max(1, Mathf.RoundToInt(mag));
+            lo.projectiles = Mathf.Clamp(Mathf.RoundToInt(proj), 1, 12);
+            lo.burst = Mathf.Clamp(Mathf.RoundToInt(burst), 1, 10);
+            return true;
+        }
+
+        /// <summary>Weighted random pick for a class: its own rows, else 'Any' rows, else the built-in default. 'how' explains which.</summary>
+        public static Loadout Pick(UnitClass c, out string how)
+        {
+            LoadoutClass want = Loadout.ToLoadoutClass(c);
+            for (int pass = 0; pass < 2; pass++)
+            {
+                LoadoutClass cls = pass == 0 ? want : LoadoutClass.Any;
+                float total = 0f; int n = 0;
+                for (int i = 0; i < all.Count; i++) if (all[i].cls == cls) { total += all[i].weight; n++; }
+                if (n == 0 || total <= 0f) continue;
+                float r = Random.value * total;
+                for (int i = 0; i < all.Count; i++)
+                {
+                    if (all[i].cls != cls) continue;
+                    r -= all[i].weight;
+                    if (r <= 0f) { how = (pass == 0 ? "random of " + n + " " + c + " row(s)" : "no " + c + " rows, random of " + n + " 'Any' row(s)"); return all[i]; }
+                }
+                for (int i = all.Count - 1; i >= 0; i--) if (all[i].cls == cls) { how = "random (rounding fallback)"; return all[i]; }
+            }
+            how = all.Count == 0 ? "no loadouts loaded: built-in default" : "no rows for " + c + " and no 'Any' rows: built-in default";
+            return Loadout.DefaultFor(c);
+        }
+
+        /// <summary>Adds or replaces (same id) a row and writes the file. Works in the editor and in play mode. Returns the file path.</summary>
+        public static string Save(Loadout lo)
+        {
+            string p = PathFor(fileName);
+            Directory.CreateDirectory(Path.GetDirectoryName(p));
+            if (!File.Exists(p)) File.WriteAllText(p, ExampleHelp.Replace("\\n", "\n") + string.Join(",", Columns) + "\n", new UTF8Encoding(false));
+
+            List<string> lines = new List<string>(File.ReadAllLines(p));
+            List<string> header = new List<string>(Columns);
+            for (int i = 0; i < lines.Count; i++)
+            {
+                string t = lines[i].Trim();
+                if (t.Length == 0 || t[0] == '#') continue;
+                List<string> cells = SplitCsv(t);
+                if (IsHeader(cells)) { header = cells; break; }
+            }
+            int idCol = Math.Max(0, header.FindIndex(delegate (string x) { return x.Equals("id", StringComparison.OrdinalIgnoreCase); }));
+            Dictionary<string, string> v = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            v["id"] = lo.id; v["class"] = lo.cls.ToString(); v["weight"] = lo.weight.ToString("0.###", inv); v["weapon"] = lo.weapon ?? "";
+            v["fireRate"] = lo.fireRate.ToString("0.###", inv); v["damage"] = lo.damage.ToString("0.###", inv); v["spread"] = lo.spread.ToString("0.###", inv);
+            v["magazine"] = lo.magazine.ToString(inv); v["reload"] = lo.reload.ToString("0.###", inv); v["range"] = lo.range.ToString("0.###", inv);
+            v["bulletSpeed"] = lo.bulletSpeed.ToString("0.###", inv); v["projectiles"] = lo.projectiles.ToString(inv); v["burst"] = lo.burst.ToString(inv);
+            v["burstDelay"] = lo.burstDelay.ToString("0.###", inv); v["spool"] = lo.spool.ToString("0.###", inv);
+            List<string> dropped = new List<string>();
+            for (int k = 0; k < Columns.Length; k++)
+                if (header.FindIndex(delegate (string x) { return x.Equals(Columns[k], StringComparison.OrdinalIgnoreCase); }) < 0) dropped.Add(Columns[k]);
+            lastSaveNote = dropped.Count > 0 ? "The CSV header has no column(s) [" + string.Join(", ", dropped.ToArray()) + "], so those values were NOT saved (the bot uses their defaults). Add the column names to the header row to store them." : "";
+            StringBuilder row = new StringBuilder();
+            for (int i = 0; i < header.Count; i++) { if (i > 0) row.Append(','); string cell; row.Append(v.TryGetValue(header[i], out cell) ? Q(cell) : ""); }
+
+            bool replaced = false; bool seenHeader = false;
+            for (int i = 0; i < lines.Count; i++)
+            {
+                string t = lines[i].Trim();
+                if (t.Length == 0 || t[0] == '#') continue;
+                List<string> cells = SplitCsv(t);
+                if (!seenHeader && IsHeader(cells)) { seenHeader = true; continue; }
+                if (idCol < cells.Count && cells[idCol].Equals(lo.id, StringComparison.OrdinalIgnoreCase)) { lines[i] = row.ToString(); replaced = true; break; }
+            }
+            if (!replaced) lines.Add(row.ToString());
+            File.WriteAllLines(p, lines.ToArray(), new UTF8Encoding(false));
+            return p;
         }
     }
 
@@ -298,6 +573,8 @@ namespace BF3AI
         public UnitClass unitClass;
         public Transform muzzle;
         public GameObject grenadePrefab;
+        [Tooltip("Optional. Where the weapon model is attached (it aims at targets). If empty one is created at chest height, right side.")]
+        public Transform weaponHolder;
 
         [Header("Runtime (read-only)")]
         public Personality personality;
@@ -313,6 +590,8 @@ namespace BF3AI
         public int uid;
         public int room = -1;
         public int shots, hits;
+        [Tooltip("The weapon loadout picked for this life (read-only).")]
+        public string loadoutInfo;
         [TextArea(2, 6)] public string debugState;
 
         [System.NonSerialized] public Squad squad;
@@ -320,6 +599,13 @@ namespace BF3AI
         public Order order { get { return _order; } set { if ((object)value != (object)_order) OnOrderChange(_order, value); _order = value; } }
         [System.NonSerialized] public CoverPoint cover;
         [System.NonSerialized] public ClassProfile profile;
+        [System.NonSerialized] public Loadout loadout;
+        GameObject weaponGO;
+        Transform[] firePoints;
+        BoltSpec boltSpec;
+        int ammo, burstLeft;
+        bool reloading;
+        float reloadEnd, spoolT;
 
         public Combatant combatant { get; private set; }
         public NavMeshAgent agent { get; private set; }
@@ -394,8 +680,106 @@ namespace BF3AI
             nextThink = Time.time + Random.value * 0.3f;
             errCount = 0; faultedUntil = 0f; frozen = false; respawnScheduled = false; stuckSince = -1f; stuckCount = 0;
             shots = 0; hits = 0; room = -1;
+            try { EquipLoadout(); }
+            catch (Exception e) { BF3Debug.Exception("EquipLoadout", e, this, this); }
             if (BF3Debug.On(DbgLevel.Info, DbgCat.Spawn))
-                BF3Debug.I(DbgCat.Spawn, Tag + " life begins at " + transform.position.ToString("F1") + "  personality " + personality + "  hp " + combatant.maxHealth + "  grenades " + grenades, this, uid);
+                BF3Debug.I(DbgCat.Spawn, Tag + " life begins at " + transform.position.ToString("F1") + "  personality " + personality + "  hp " + combatant.maxHealth + "  grenades " + grenades + "  loadout " + loadoutInfo, this, uid);
+        }
+
+        // ================================================================= weapon loadout
+        /// <summary>Picks this life's loadout (random among the class's CSV rows), applies its stats to the profile and builds the weapon model.</summary>
+        void EquipLoadout()
+        {
+            string how;
+            SquadManager mgr = SquadManager.Instance;
+            Loadout lo;
+            if (mgr != null && mgr.useLoadouts) lo = LoadoutStore.Pick(unitClass, out how);
+            else { lo = Loadout.DefaultFor(unitClass); how = "loadouts disabled in SquadManager"; }
+            loadout = lo;
+            loadoutInfo = lo.id + " (" + how + ")";
+
+            profile.damage = lo.damage;
+            profile.shotsPerSecond = Mathf.Max(0.05f, lo.fireRate);
+            profile.weaponSpread = lo.spread;
+            profile.magazine = lo.magazine; profile.reload = lo.reload;
+            profile.weaponRange = lo.range; profile.bulletSpeed = lo.bulletSpeed;
+            profile.pellets = lo.projectiles; profile.burst = lo.burst; profile.burstDelay = lo.burstDelay;
+            profile.spoolTime = lo.spool;
+            ammo = lo.magazine; reloading = false; burstLeft = 0; spoolT = 0f;
+
+            BuildWeaponVisual(lo);
+            if (BF3Debug.On(DbgLevel.Verbose, DbgCat.Spawn))
+                BF3Debug.V(DbgCat.Spawn, Tag + " equips " + lo + "  -> " + how, this, uid);
+        }
+
+        void BuildWeaponVisual(Loadout lo)
+        {
+            if (weaponGO != null) { Destroy(weaponGO); weaponGO = null; }
+            firePoints = null;
+            SquadManager mgr = SquadManager.Instance;
+            boltSpec = new BoltSpec
+            {
+                speed = lo.bulletSpeed > 0f ? lo.bulletSpeed : 60f,
+                prefab = mgr != null ? mgr.fallbackBoltPrefab : null,
+                color = team % 2 == 1 ? new Color(1f, 0.3f, 0.1f) : new Color(0.2f, 0.7f, 1f)
+            };
+            if (string.IsNullOrEmpty(lo.weapon)) return;
+
+            string resPath = LoadoutStore.weaponsPath + "/" + lo.weapon;
+            GameObject prefab = Resources.Load<GameObject>(resPath);
+            if (prefab == null)
+            {
+                BF3Debug.W(DbgCat.Setup, Tag + " loadout '" + lo.id + "': weapon prefab 'Resources/" + resPath + "' was not found, so this bot has no weapon model and fires generated tracers. Check the name in the CSV and that the prefab is inside a folder named 'Resources'.", this, uid);
+                return;
+            }
+            if (weaponHolder == null)
+            {
+                GameObject h = new GameObject("WeaponHolder");
+                h.transform.SetParent(transform, false);
+                h.transform.localPosition = new Vector3(0.22f, combatant.standingHeight * 0.65f, 0.25f);
+                weaponHolder = h.transform;
+            }
+            weaponHolder.localRotation = Quaternion.identity;
+            weaponGO = Instantiate(prefab, weaponHolder);
+            weaponGO.transform.localPosition = Vector3.zero;
+            weaponGO.transform.localRotation = Quaternion.identity;
+
+            // it is only a model: no player input scripts, no colliders, on the bot's layer
+            foreach (MonoBehaviour mb in weaponGO.GetComponentsInChildren<MonoBehaviour>(true)) mb.enabled = false;
+            foreach (Collider col in weaponGO.GetComponentsInChildren<Collider>(true)) col.enabled = false;
+            foreach (Transform t in weaponGO.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = gameObject.layer;
+
+            Blaster bl = weaponGO.GetComponentInChildren<Blaster>(true);
+            if (bl == null)
+            {
+                BF3Debug.W(DbgCat.Setup, Tag + " loadout '" + lo.id + "': weapon prefab '" + lo.weapon + "' has no Blaster component, so it is shown as a model only (no firepoints / bolt prefab).", this, uid);
+                return;
+            }
+            List<Transform> fps = new List<Transform>();
+            if (bl.firePoints != null) for (int i = 0; i < bl.firePoints.Count; i++) if (bl.firePoints[i] != null) fps.Add(bl.firePoints[i]);
+            firePoints = fps.Count > 0 ? fps.ToArray() : null;
+            if (bl.bulletPrefab != null) boltSpec.prefab = bl.bulletPrefab;
+            boltSpec.rotOffset = bl.projectileRotationOffset;
+            if (lo.bulletSpeed <= 0f && bl.bulletSpeed > 0f) boltSpec.speed = bl.bulletSpeed;
+            if (bl.bulletPrefab != null)
+            {
+                Lazers lz = bl.bulletPrefab.GetComponent<Lazers>();
+                if (lz != null) boltSpec.impactFx = lz.impactEffectPrefab;
+            }
+            if (firePoints == null && BF3Debug.Allow("nofp" + uid, 30f))
+                BF3Debug.W(DbgCat.Setup, Tag + " weapon '" + lo.weapon + "' has an empty Firepoints list; shots start from the bot's muzzle/eye.", this, uid);
+        }
+
+        void UpdateWeaponAim()
+        {
+            if (weaponHolder == null || weaponGO == null) return;
+            Vector3 want = transform.forward;
+            if (fireMode != FireMode.None)
+            {
+                Vector3 d = AimPos() - weaponHolder.position;
+                if (d.sqrMagnitude > 0.01f) want = d;
+            }
+            weaponHolder.rotation = Quaternion.RotateTowards(weaponHolder.rotation, Quaternion.LookRotation(want), 540f * Time.deltaTime);
         }
 
         void HandleDeath(Combatant killer)
@@ -996,6 +1380,7 @@ namespace BF3AI
             if (look.sqrMagnitude > 0.01f)
                 transform.rotation = Quaternion.RotateTowards(transform.rotation, Quaternion.LookRotation(look), 420f * Time.deltaTime);
 
+            UpdateWeaponAim();
             HandleFire();
         }
 
@@ -1017,10 +1402,36 @@ namespace BF3AI
             else fireMode = FireMode.None;
         }
 
+        void StartReload()
+        {
+            if (reloading) return;
+            reloading = true; reloadEnd = Time.time + Mathf.Max(0.1f, profile.reload);
+            burstLeft = 0;
+            if (BF3Debug.On(DbgLevel.Verbose, DbgCat.Combat))
+                BF3Debug.V(DbgCat.Combat, Tag + " reloading (" + ammo + "/" + profile.magazine + ") for " + profile.reload.ToString("F1") + "s.", this, uid);
+        }
+
         void HandleFire()
         {
-            if (fireMode == FireMode.None || Time.time < nextShot) return;
-            Vector3 origin = muzzle != null ? muzzle.position : Eye;
+            float dt = Time.deltaTime;
+            bool wants = fireMode != FireMode.None;
+            bool infinite = profile.magazine > 100;
+
+            if (profile.spoolTime > 0f) spoolT = wants ? Mathf.Min(profile.spoolTime, spoolT + dt) : Mathf.Max(0f, spoolT - dt);
+            if (!wants) burstLeft = 0;
+
+            if (reloading)
+            {
+                if (Time.time < reloadEnd) return;
+                reloading = false; ammo = profile.magazine;
+            }
+            else if (!infinite && !wants && ammo < profile.magazine * 0.6f) StartReload();   // top up while nothing is happening
+
+            if (!wants || Time.time < nextShot) return;
+            if (!infinite && ammo <= 0) { StartReload(); return; }
+            if (profile.spoolTime > 0f && spoolT < profile.spoolTime) return;     // heavy weapon still spinning up
+
+            Vector3 origin = firePoints != null ? firePoints[0].position : (muzzle != null ? muzzle.position : Eye);
             Vector3 aim = AimPos();
             Vector3 dir = aim - origin;
             float dist = dir.magnitude;
@@ -1030,9 +1441,19 @@ namespace BF3AI
             Vector3 flat = Tactics.Flat(dir);
             if (flat.sqrMagnitude > 0.001f && Vector3.Angle(transform.forward, flat) > 12f) return;   // still turning
 
-            float interval = 1f / profile.shotsPerSecond;
-            if (fireMode == FireMode.Blind) interval *= 1.6f;
-            if (unitClass == UnitClass.Sniper) interval *= Random.Range(1f, 1.4f);
+            float interval;
+            if (profile.burst > 1)
+            {
+                if (burstLeft <= 0) burstLeft = profile.burst;
+                burstLeft--;
+                interval = burstLeft > 0 ? profile.burstDelay : 1f / profile.shotsPerSecond;
+            }
+            else interval = 1f / profile.shotsPerSecond;
+            if (burstLeft <= 0)
+            {
+                if (fireMode == FireMode.Blind) interval *= 1.6f;
+                if (unitClass == UnitClass.Sniper) interval *= Random.Range(1f, 1.4f);
+            }
             nextShot = Time.time + interval;
 
             float spread = profile.spreadDeg * (1.4f - personality.marksmanship * 0.8f) * (1f + suppression * 1.5f);
@@ -1040,11 +1461,25 @@ namespace BF3AI
             if (fireMode == FireMode.Suppress) spread = Mathf.Max(spread, 3f);
             if (fireMode == FireMode.Blind) spread *= 3f;
             if (Panicking) spread *= 2.5f;   // panicked units miss
+            spread += profile.weaponSpread;
 
-            dir = Quaternion.AngleAxis(Random.Range(-spread, spread), Vector3.up)
-                * Quaternion.AngleAxis(Random.Range(-spread, spread), transform.right) * dir;
+            int fpCount = firePoints != null ? firePoints.Length : 0;
+            int total = Mathf.Clamp(Mathf.Max(1, fpCount) * profile.pellets, 1, 24);
+            if (!infinite) ammo--;
             shots++;
-            if (AIWorld.Fire(combatant, origin, dir, profile.viewRange * 1.2f, profile.damage)) hits++;
+            bool anyHit = false;
+            BoltSpec spec = (SquadManager.Instance == null || SquadManager.Instance.boltVisuals) ? boltSpec : null;
+            float range = profile.Range;
+            for (int i = 0; i < total; i++)
+            {
+                Vector3 o = fpCount > 0 ? firePoints[i % fpCount].position : origin;
+                Vector3 d = aim - o;
+                d = d.sqrMagnitude > 0.0001f ? d.normalized : dir;
+                d = Quaternion.AngleAxis(Random.Range(-spread, spread), Vector3.up)
+                  * Quaternion.AngleAxis(Random.Range(-spread, spread), transform.right) * d;
+                if (AIWorld.Fire(combatant, o, d, range, profile.damage, spec, i == 0)) anyHit = true;
+            }
+            if (anyHit) hits++;
         }
 
         void TryGrenade(Contact tc)
@@ -1173,7 +1608,8 @@ namespace BF3AI
             if (target != null) sb.Append(" | target '").Append(target.name).Append("' ").Append(Vector3.Distance(transform.position, target.transform.position).ToString("F0")).Append("m ").Append(perception != null && perception.IsVisible(target) ? "visible" : "not visible");
             else sb.Append(" | no target");
             sb.Append(" | known ").Append(known.Count).Append(" supp ").Append(suppression.ToString("F2")).Append(" shots/hits ").Append(shots).Append('/').Append(hits).Append(" kills ").Append(kills)
-              .Append(" uptime ").Append(profile != null ? Uptime.ToString("F0") : "-").Append("s");
+              .Append(" uptime ").Append(profile != null ? Uptime.ToString("F0") : "-").Append("s")
+              .Append(" | gun ").Append(loadout != null ? loadout.id : "-").Append(profile != null && profile.magazine <= 100 ? " ammo " + ammo + "/" + profile.magazine : "").Append(reloading ? " RELOADING" : "");
             if (squad != null) sb.Append(" | ").Append(squad.Tag).Append(squad.platoon != null ? "/" + squad.platoon.Tag + " " + squad.platoon.Strategy + " coh " + squad.platoon.Cohesion.ToString("F2") : "/no-platoon");
             else sb.Append(" | NO SQUAD");
             if (personality != null) sb.Append(" | ").Append(personality);

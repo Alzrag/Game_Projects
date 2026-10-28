@@ -301,6 +301,18 @@ namespace BF3AI
         [Tooltip("Every N seconds a full snapshot of every platoon, squad and unit (mode, order, target, cover, path state) plus the player is written into the file. 0 = no snapshots. Roughly 5 KB per snapshot with 12 bots.")]
         public float fileSnapshotInterval = 2f;
 
+        [Header("Weapon loadouts (CSV)  -  bots use your Blaster / Lazers weapon prefabs")]
+        [Tooltip("ON: every life each bot picks a random loadout row for its class from the CSV. OFF: built-in class weapons, hitscan only.")]
+        public bool useLoadouts = true;
+        [Tooltip("CSV file inside Assets/StreamingAssets/. Created with examples on first run. Edit it in any text editor or spreadsheet.")]
+        public string loadoutFile = "BF3AI_Loadouts.csv";
+        [Tooltip("Resources sub-folder holding the weapon prefabs named in the CSV (the same folder your WeaponManager loads from).")]
+        public string weaponsResourcesPath = "Weapons";
+        [Tooltip("ON: bot shots are drawn as bolts (your Lazers prefab, or a generated tracer) and damage lands when the bolt arrives. OFF: instant invisible hits.")]
+        public bool boltVisuals = true;
+        [Tooltip("Optional bolt used when a weapon has no bullet prefab (or a loadout has no weapon). Empty = generated tracer.")]
+        public GameObject fallbackBoltPrefab;
+
         [Header("Debug tools")]
         [Tooltip("How many log events the black-box recorder keeps.")]
         public int logHistory = 3000;
@@ -344,6 +356,10 @@ namespace BF3AI
             if (resetLearningOnStart) LearningMemory.ResetAll();
             LearningMemory.Hook();
             Grenade.Clear();
+            BoltVisuals.Clear();
+            LoadoutStore.weaponsPath = weaponsResourcesPath;
+            LoadoutStore.fileName = loadoutFile;
+            if (useLoadouts) LoadoutStore.Load(loadoutFile, true);
             BF3Debug.I(DbgCat.Setup, "SquadManager awake. Obstacles=" + MaskName(obstacleMask), this);
         }
 
@@ -489,6 +505,25 @@ namespace BF3AI
             foreach (AIUnit au in FindAll<AIUnit>())
                 if (au != null && au.gameObject.scene.IsValid() && au.profile == null)
                     VErr("AIUnit on scene object '" + au.name + "' was placed by hand (it is not a spawned bot). Delete it from the Hierarchy: bots must come from the Unit Prefab in the Teams list. (If this is your player, remove the AIUnit component from it.)");
+
+            // ---- weapon loadouts
+            if (useLoadouts)
+            {
+                if (LoadoutStore.all.Count == 0) VWarn("Loadouts: no rows loaded from '" + LoadoutStore.path + "'. Bots use the built-in class weapons.");
+                else
+                {
+                    System.Collections.Generic.HashSet<string> checkedW = new System.Collections.Generic.HashSet<string>();
+                    for (int i = 0; i < LoadoutStore.all.Count; i++)
+                    {
+                        Loadout lo = LoadoutStore.all[i];
+                        if (string.IsNullOrEmpty(lo.weapon) || !checkedW.Add(lo.weapon)) continue;
+                        GameObject wp = Resources.Load<GameObject>(LoadoutStore.weaponsPath + "/" + lo.weapon);
+                        if (wp == null) VWarn("Loadout '" + lo.id + "': weapon prefab Resources/" + LoadoutStore.weaponsPath + "/" + lo.weapon + " not found. Bots with it fire generated tracers and show no weapon.");
+                        else if (wp.GetComponentInChildren<Blaster>(true) == null) VWarn("Loadout '" + lo.id + "': prefab '" + lo.weapon + "' has no Blaster component (model only, no firepoints/bolt prefab).");
+                    }
+                    VInfo("Loadouts: " + LoadoutStore.all.Count + " row(s) loaded from " + LoadoutStore.path);
+                }
+            }
 
             // ---- teams
             if (teams.Count == 0) VErr("SquadManager has no teams configured.");
@@ -640,6 +675,8 @@ namespace BF3AI
                 }
             try { Grenade.Tick(); }
             catch (Exception e) { BF3Debug.Exception("Grenade.Tick", e, null, this); }
+            try { BoltVisuals.Tick(); }
+            catch (Exception e) { BF3Debug.Exception("BoltVisuals.Tick", e, null, this); }
 
             if (Time.time >= nextMgmt)
             {
@@ -689,6 +726,22 @@ namespace BF3AI
                 nextOverlay = Time.unscaledTime + 0.25f;
                 if (overlay) { try { overlayText = BuildOverlay(); } catch (Exception e) { overlayText = "overlay error: " + e.Message; } }
             }
+        }
+
+        [ContextMenu("BF3AI/Reload Loadouts CSV")]
+        void ReloadLoadoutsMenu()
+        {
+            LoadoutStore.weaponsPath = weaponsResourcesPath;
+            int n = LoadoutStore.Load(loadoutFile, true);
+            BF3Debug.Note(DbgCat.Setup, "Loadouts reloaded: " + n + " row(s). New lives pick from the new list; bots alive keep their weapon until they respawn.", this);
+        }
+
+        [ContextMenu("BF3AI/Write Example Loadouts CSV (next to the real one)")]
+        void WriteExampleLoadoutsMenu()
+        {
+            string p = LoadoutStore.PathFor(Path.GetFileNameWithoutExtension(loadoutFile) + ".example.csv");
+            LoadoutStore.WriteExample(p);
+            BF3Debug.Note(DbgCat.Setup, "Example loadouts written to " + p, this);
         }
 
         void HandleHotkeys()
@@ -923,6 +976,10 @@ namespace BF3AI
             sb.Append("\n==== PLATOONS / SQUADS / UNITS ====\n");
             AppendUnits(sb);
 
+            sb.Append("\n==== WEAPON LOADOUTS ====\n");
+            sb.Append(useLoadouts ? "file: " + LoadoutStore.path + "  rows: " + LoadoutStore.all.Count + "  bad rows skipped: " + LoadoutStore.badRows + "\n" : "(loadouts disabled)\n");
+            for (int i = 0; i < LoadoutStore.all.Count; i++) sb.Append("  ").Append(LoadoutStore.all[i].ToString()).Append('\n');
+
             sb.Append("\n==== LEARNING ====\n");
             for (int t = 0; t < teams.Count; t++)
             {
@@ -1045,19 +1102,30 @@ namespace BF3AI
             public int Compare(RaycastHit a, RaycastHit b) { return a.distance.CompareTo(b.distance); }
         }
 
+        /// <summary>Instant hit, no visual (old behaviour).</summary>
         public static bool Fire(Combatant shooter, Vector3 origin, Vector3 dir, float range, float damage)
+        {
+            return Fire(shooter, origin, dir, range, damage, null, true);
+        }
+
+        /// <summary>
+        /// Resolves a shot instantly (what it hits is decided now) but, when 'visual' is given, draws a bolt that
+        /// travels to the impact point and applies the damage when it ARRIVES. Returns true if it will hit an enemy.
+        /// </summary>
+        public static bool Fire(Combatant shooter, Vector3 origin, Vector3 dir, float range, float damage, BoltSpec visual, bool makeSound)
         {
             if (shooter == null || float.IsNaN(dir.x) || float.IsNaN(dir.y) || float.IsNaN(dir.z) || float.IsNaN(origin.x))
             {
                 if (BF3Debug.Allow("badfire", 3f)) BF3Debug.E(DbgCat.Combat, "AIWorld.Fire called with " + (shooter == null ? "a null shooter" : "a NaN origin/direction") + ". Shot ignored.");
                 return false;
             }
-            SoundBus.Emit(origin, 70f, shooter.team, SoundType.Gunshot);
+            if (makeSound) SoundBus.Emit(origin, 70f, shooter.team, SoundType.Gunshot);
             int n = Physics.RaycastNonAlloc(origin, dir, buf, range, ~0, QueryTriggerInteraction.Ignore);
             Array.Sort(buf, 0, n, cmp);
 
             Vector3 end = origin + dir * range;
             bool hit = false;
+            Combatant victim = null;
             // every solid stops a bullet completely: there is no see-through or penetrable cover
             float dmg = damage;
             for (int i = 0; i < n; i++)
@@ -1068,13 +1136,18 @@ namespace BF3AI
                 if (c != null)
                 {
                     if (c.team == shooter.team || !c.IsAlive) continue;
-                    end = h.point; hit = true;
-                    c.TakeDamage(dmg, shooter);
+                    end = h.point; hit = true; victim = c;
                     break;
                 }
                 end = h.point;
                 break;
             }
+
+            if (visual == null)
+            {
+                if (victim != null) victim.TakeDamage(dmg, shooter);
+            }
+            else BoltVisuals.Spawn(visual, origin, end, victim, shooter, dmg);
 
             // near-miss suppression on enemy AI
             Vector3 ab = end - origin;
@@ -1089,6 +1162,115 @@ namespace BF3AI
             }
             Debug.DrawLine(origin, end, Color.yellow, 0.05f);
             return hit;
+        }
+    }
+
+    // =====================================================================================================
+    //  BoltVisuals - draws bot shots. Uses the weapon's own bullet prefab (your Lazers prefab, with its
+    //  scripts switched off) or a generated tracer. Damage is applied when the bolt arrives.
+    // =====================================================================================================
+    public class BoltSpec
+    {
+        public GameObject prefab, impactFx;
+        public Vector3 rotOffset = new Vector3(90f, 0f, 0f);   // same meaning as Blaster.projectileRotationOffset
+        public float speed = 60f;
+        public Color color = new Color(1f, 0.3f, 0.1f);
+    }
+
+    public static class BoltVisuals
+    {
+        class Live
+        {
+            public Transform t; public Vector3 from, dir, end; public float dist, travelled, speed, damage;
+            public Combatant victim, shooter; public GameObject impactFx;
+        }
+        static readonly List<Live> live = new List<Live>();
+        static readonly Dictionary<int, Material> mats = new Dictionary<int, Material>();
+        const int MaxLive = 300;
+
+        public static void Clear()
+        {
+            for (int i = 0; i < live.Count; i++) if (live[i].t != null) UnityEngine.Object.Destroy(live[i].t.gameObject);
+            live.Clear(); mats.Clear();
+        }
+
+        public static int LiveCount { get { return live.Count; } }
+
+        public static void Spawn(BoltSpec s, Vector3 from, Vector3 to, Combatant victim, Combatant shooter, float damage)
+        {
+            Vector3 delta = to - from; float dist = delta.magnitude;
+            if (float.IsNaN(dist) || dist < 0.05f || live.Count >= MaxLive)
+            {
+                if (live.Count >= MaxLive && BF3Debug.Allow("boltcap", 10f)) BF3Debug.W(DbgCat.Combat, "More than " + MaxLive + " bolts in flight; extra shots hit instantly without a visual.");
+                if (victim != null && victim.IsAlive) victim.TakeDamage(damage, shooter);
+                return;
+            }
+            Vector3 dir = delta / dist;
+            GameObject go = Make(s, from, dir);
+            live.Add(new Live { t = go.transform, from = from, dir = dir, end = to, dist = dist, speed = Mathf.Max(5f, s.speed), damage = damage, victim = victim, shooter = shooter, impactFx = s.impactFx });
+        }
+
+        static GameObject Make(BoltSpec s, Vector3 from, Vector3 dir)
+        {
+            GameObject go;
+            if (s.prefab != null)
+            {
+                go = UnityEngine.Object.Instantiate(s.prefab, from, Quaternion.LookRotation(dir) * Quaternion.Euler(s.rotOffset));
+                foreach (MonoBehaviour mb in go.GetComponentsInChildren<MonoBehaviour>(true)) mb.enabled = false;   // Lazers etc: we move it ourselves
+                foreach (Collider c in go.GetComponentsInChildren<Collider>(true)) c.enabled = false;
+                foreach (Rigidbody rb in go.GetComponentsInChildren<Rigidbody>(true)) rb.isKinematic = true;
+            }
+            else
+            {
+                go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                Collider col = go.GetComponent<Collider>();
+                if (col != null) { col.enabled = false; UnityEngine.Object.Destroy(col); }
+                go.transform.position = from; go.transform.rotation = Quaternion.LookRotation(dir);
+                go.transform.localScale = new Vector3(0.07f, 0.07f, 1.1f);
+                Renderer r = go.GetComponent<Renderer>();
+                if (r != null)
+                {
+                    int key = s.color.GetHashCode();
+                    Material m;
+                    if (!mats.TryGetValue(key, out m) || m == null)
+                    {
+                        Shader sh = Shader.Find("Sprites/Default");
+                        if (sh == null) sh = Shader.Find("Unlit/Color");
+                        m = sh != null ? new Material(sh) : new Material(r.sharedMaterial);
+                        m.color = s.color;
+                        mats[key] = m;
+                    }
+                    r.sharedMaterial = m;
+                }
+            }
+            go.name = "BotBolt";
+            return go;
+        }
+
+        public static void Tick()
+        {
+            float dt = Time.deltaTime;
+            for (int i = live.Count - 1; i >= 0; i--)
+            {
+                Live b = live[i];
+                if (b.t == null) { live.RemoveAt(i); continue; }
+                b.travelled += b.speed * dt;
+                if (b.travelled >= b.dist)
+                {
+                    live.RemoveAt(i);                          // remove first so a failing arrival can never loop
+                    try { Arrive(b); }
+                    catch (Exception e) { BF3Debug.Exception("BoltVisuals.Arrive", e, null, null); }
+                    continue;
+                }
+                b.t.position = b.from + b.dir * b.travelled;
+            }
+        }
+
+        static void Arrive(Live b)
+        {
+            if (b.victim != null && b.victim.IsAlive) b.victim.TakeDamage(b.damage, b.shooter);
+            if (b.impactFx != null) UnityEngine.Object.Instantiate(b.impactFx, b.end, Quaternion.LookRotation(-b.dir));
+            UnityEngine.Object.Destroy(b.t.gameObject);
         }
     }
 

@@ -76,6 +76,18 @@ public class Blaster : MonoBehaviour
     [Range(0.05f, 0.95f)]
     public float triggerThreshold = 0.1f;
 
+    [Header("BF3AI bot loadout (used by this component's menu: Save As Bot Loadout)")]
+    [Tooltip("Row id in Assets/StreamingAssets/BF3AI_Loadouts.csv. Saving again with the same id replaces that row. Empty = the weapon prefab's name.")]
+    public string botLoadoutId = "";
+    [Tooltip("Which bot class may be given this weapon. Any = used only by classes that have no weapon of their own.")]
+    public BF3AI.LoadoutClass botClass = BF3AI.LoadoutClass.Any;
+    [Tooltip("Relative chance of being picked among the rows of its class (0 disables the row).")]
+    public float botWeight = 1f;
+    [Tooltip("Seconds a bot needs to reload this weapon.")]
+    public float botReloadTime = 2f;
+    [Tooltip("Max effective range for bots, in metres. 0 = the class's normal range.")]
+    public float botRange = 0f;
+
     // Private runtime variables
     private int currentAmmo;
     private float nextFireTime;
@@ -338,6 +350,41 @@ public class Blaster : MonoBehaviour
                 }
             }
         }
+    }
+
+    // Right-click this component's header (or the three dots) > BF3AI > Save As Bot Loadout.
+    // Works on the weapon prefab in the Project window (edit mode) or in play mode.
+    [ContextMenu("BF3AI/Save As Bot Loadout (CSV)")]
+    private void SaveAsBotLoadout()
+    {
+        string weaponName = gameObject.name.Replace("(Clone)", "").Trim();
+        BF3AI.Loadout lo = new BF3AI.Loadout
+        {
+            id = string.IsNullOrWhiteSpace(botLoadoutId) ? weaponName : botLoadoutId.Trim(),
+            cls = botClass,
+            weight = botWeight,
+            weapon = weaponName,
+            fireRate = fireRate,
+            damage = damage,
+            spread = (spreadX + spreadY) * 0.5f,
+            magazine = Mathf.Max(1, magazineSize),
+            reload = botReloadTime,
+            range = botRange,
+            bulletSpeed = bulletSpeed,
+            projectiles = Mathf.Max(1, projectilesPerShot),
+            burst = isBurstable ? Mathf.Max(1, volleysPerBurst) : 1,
+            burstDelay = burstDelay,
+            spool = spoolSettings.isSpoolable ? spoolSettings.spoolTime : 0f
+        };
+
+        string file;
+        try { file = BF3AI.LoadoutStore.Save(lo); }
+        catch (System.Exception e) { Debug.LogError("[Blaster] Could not save the bot loadout: " + e.Message, this); return; }
+
+        Debug.Log("[Blaster] Saved bot loadout '" + lo.id + "' (" + lo.cls + ") to " + file + ". Bots pick it at random among the " + lo.cls + " rows each life.", this);
+        if (!string.IsNullOrEmpty(BF3AI.LoadoutStore.lastSaveNote)) Debug.LogWarning("[Blaster] " + BF3AI.LoadoutStore.lastSaveNote, this);
+        if (Resources.Load<GameObject>(BF3AI.LoadoutStore.weaponsPath + "/" + weaponName) == null)
+            Debug.LogWarning("[Blaster] No prefab 'Resources/" + BF3AI.LoadoutStore.weaponsPath + "/" + weaponName + "' was found, so bots using this row will fire generated tracers and show no weapon. Put the weapon prefab in a Resources/" + BF3AI.LoadoutStore.weaponsPath + " folder (the same one WeaponManager loads from).", this);
     }
 
     private void Reload()

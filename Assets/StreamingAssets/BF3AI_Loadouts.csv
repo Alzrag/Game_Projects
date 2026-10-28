@@ -1,0 +1,16 @@
+# BF3AI weapon loadouts. One row = one weapon set-up. Each life every bot picks one row at random (weighted) among the rows for its class.
+# class: Assault | Heavy | Sniper | Officer | Any.  'Any' rows are used only for classes that have no row of their own.  weight: relative chance (0 = disabled).
+# weapon: name of a weapon prefab in Assets/Resources/<Weapons folder>/ (the same prefabs WeaponManager loads). Leave empty for no model (a generated tracer is used).
+# fireRate: trigger pulls per second. spread: weapon spread in degrees, added to the bot's own aim error. magazine: >100 = infinite. range: metres, 0 = class default.
+# bulletSpeed: m/s, 0 = from the weapon's Blaster. projectiles: per firepoint per pull (shotguns). burst/burstDelay: pulls per burst. spool: seconds before first shot.
+# Lines starting with # are ignored. Columns can be in any order as long as the header row names them. After editing, restart play mode (or use the SquadManager menu: BF3AI > Reload Loadouts CSV).
+id,class,weight,weapon,fireRate,damage,spread,magazine,reload,range,bulletSpeed,projectiles,burst,burstDelay,spool
+assault_carbine,Assault,3,,6,12,0,30,2,0,0,1,1,0.08,0
+assault_burst,Assault,2,,4,14,0.3,24,2.2,0,0,1,3,0.07,0
+assault_scatter,Assault,1,,1.2,7,2.5,8,2.5,25,0,5,1,0.08,0
+heavy_lmg,Heavy,3,,12,9,0.8,300,4,0,0,1,1,0.08,0.8
+heavy_repeater,Heavy,1,,8,13,0.4,60,3.5,0,0,1,1,0.08,0.5
+sniper_rifle,Sniper,3,,0.7,60,0,5,3,0,90,1,1,0.08,0
+officer_pistol,Officer,3,,5,14,0.2,24,2,0,0,1,1,0.08,0
+officer_burst,Officer,1,,3,15,0.2,30,2.4,0,0,1,3,0.09,0
+any_fallback,Any,1,,6,11,0,30,2,0,0,1,1,0.08,0
