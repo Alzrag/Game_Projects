@@ -301,6 +301,10 @@ namespace BF3AI
         [Tooltip("Every N seconds a full snapshot of every platoon, squad and unit (mode, order, target, cover, path state) plus the player is written into the file. 0 = no snapshots. Roughly 5 KB per snapshot with 12 bots.")]
         public float fileSnapshotInterval = 2f;
 
+        [Header("Accuracy")]
+        [Tooltip("Multiplies every bot's aim error (class skill, personality, suppression, movement, panic). 1 = default, 0.5 = twice as accurate, 0 = perfect aim. Weapon spread from the loadout CSV is added after this.")]
+        [Range(0f, 2f)] public float aimErrorScale = 1f;
+
         [Header("Weapon loadouts (CSV)  -  bots use your Blaster / Lazers weapon prefabs")]
         [Tooltip("ON: every life each bot picks a random loadout row for its class from the CSV. OFF: built-in class weapons, hitscan only.")]
         public bool useLoadouts = true;
@@ -341,6 +345,14 @@ namespace BF3AI
         {
             for (int i = 0; i < teams.Count; i++) if (teams[i].team == team) return teams[i];
             return null;
+        }
+
+        // Keeps an accidentally zeroed 'Squads Per Team' from silently spawning nothing.
+        void OnValidate()
+        {
+            if (teams == null) return;
+            for (int i = 0; i < teams.Count; i++)
+                if (teams[i] != null && teams[i].squadsPerTeam < 1) teams[i].squadsPerTeam = 1;
         }
 
         // ================================================================= setup
@@ -531,7 +543,7 @@ namespace BF3AI
             {
                 TeamConfig cfg = teams[t]; string tn = "Team " + cfg.team + ": ";
                 if (cfg.team == 0) VErr(tn + "team 0 is reserved for the player. Bots on team 0 would be friendly to you.");
-                if (cfg.squadsPerTeam < 1) VErr(tn + "Squads Per Team is " + cfg.squadsPerTeam + ", so NOTHING will spawn. Set it to 1-3 in the SquadManager's Teams entry.");
+                if (cfg.squadsPerTeam < 1) VWarn(tn + "Squads Per Team is " + cfg.squadsPerTeam + "; one squad will be spawned anyway. Set it to 1-3 in the SquadManager's Teams entry.");
                 for (int j = t + 1; j < teams.Count; j++) if (teams[j].team == cfg.team) VWarn(tn + "duplicate team id in the Teams list.");
 
                 if (cfg.unitPrefab == null) { VErr(tn + "unitPrefab is empty."); }
@@ -1234,13 +1246,27 @@ namespace BF3AI
                     Material m;
                     if (!mats.TryGetValue(key, out m) || m == null)
                     {
-                        Shader sh = Shader.Find("Sprites/Default");
-                        if (sh == null) sh = Shader.Find("Unlit/Color");
-                        m = sh != null ? new Material(sh) : new Material(r.sharedMaterial);
+                        // Clone whatever material the active render pipeline gives a primitive (URP Lit, HDRP Lit or Built-in Standard),
+                        // so it always renders correctly, then make it a bright glowing colour. No shader lookup by name.
+                        Material baseMat = r.sharedMaterial;
+                        if (baseMat != null) m = new Material(baseMat);
+                        else
+                        {
+                            Shader sh = Shader.Find("Universal Render Pipeline/Unlit");
+                            if (sh == null) sh = Shader.Find("Sprites/Default");
+                            m = sh != null ? new Material(sh) : r.material;
+                        }
                         m.color = s.color;
+                        if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", s.color);
+                        if (m.HasProperty("_Color")) m.SetColor("_Color", s.color);
+                        if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", 0f);
+                        if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", 0f);
+                        if (m.HasProperty("_EmissionColor")) { m.EnableKeyword("_EMISSION"); m.SetColor("_EmissionColor", s.color * 4f); }
                         mats[key] = m;
                     }
                     r.sharedMaterial = m;
+                    r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                    r.receiveShadows = false;
                 }
             }
             go.name = "BotBolt";
@@ -1283,7 +1309,21 @@ namespace BF3AI
             return Mathf.Sqrt(-2f * Mathf.Log(u1)) * Mathf.Cos(2f * Mathf.PI * u2);
         }
 
+        /// <summary>One axis of aim error for a given standard deviation (degrees): bell-shaped, never beyond 3 sigma.</summary>
+        public static float AimErrorSigma(float sigma)
+        {
+            if (sigma <= 0f) return 0f;
+            return Mathf.Clamp(Gauss() * sigma, -3f * sigma, 3f * sigma);
+        }
+
         public static Vector3 Flat(Vector3 v) { v.y = 0f; return v; }
+
+        /// <summary>One axis of aim error in degrees: bell-shaped (most shots land near the aim point), about 95% within +/-spread, never beyond 1.5x spread.</summary>
+        public static float AimError(float spread)
+        {
+            if (spread <= 0f) return 0f;
+            return Mathf.Clamp(Gauss() * spread * 0.5f, -spread * 1.5f, spread * 1.5f);
+        }
 
         public static Vector3 Nav(Vector3 p, float radius = 6f)
         {
@@ -1880,6 +1920,50 @@ namespace BF3AI
 
         static bool IsAssaultOrOfficer(AIUnit u) { return u.unitClass == UnitClass.Assault || u.unitClass == UnitClass.Officer; }
 
+        // ---- range-aware roles: who holds the line of fire and who closes the distance, decided from what each unit's class + weapon is good at
+        readonly HashSet<AIUnit> baseSet = new HashSet<AIUnit>();
+        bool rolesSplit;
+        string lastRoleLog = "";
+
+        /// <summary>
+        /// Base of fire = units that shoot well at this range, or are already too close for their weapon (they hold and are covered).
+        /// Closers = units whose weapon is out of its band because the enemy is too FAR. If nobody is in band, the best-suited half holds the line.
+        /// If everybody is in band the classic split applies (heavy/sniper hold, assault/officer move).
+        /// </summary>
+        void AssignRoles(float dist)
+        {
+            baseSet.Clear();
+            int live = 0;
+            for (int i = 0; i < members.Count; i++)
+            {
+                AIUnit u = members[i]; if (!Live(u)) continue;
+                live++;
+                if (u.profile.Fit(dist) >= 0.35f || dist < u.profile.bandLo) baseSet.Add(u);
+            }
+            if (live > 0 && baseSet.Count == 0)
+            {
+                List<AIUnit> l = new List<AIUnit>();
+                for (int i = 0; i < members.Count; i++) if (Live(members[i])) l.Add(members[i]);
+                l.Sort(delegate (AIUnit a, AIUnit b) { return Marksmanship.Rating(b.profile, dist).CompareTo(Marksmanship.Rating(a.profile, dist)); });
+                for (int i = 0; i < (l.Count + 1) / 2; i++) baseSet.Add(l[i]);
+            }
+            rolesSplit = baseSet.Count > 0 && baseSet.Count < live;
+
+            if (BF3Debug.On(DbgLevel.Verbose, DbgCat.Squad))
+            {
+                System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                sb.Append(rolesSplit ? "range roles at " + dist.ToString("F0") + " m: hold " : "range roles at " + dist.ToString("F0") + " m: all in band, class split; hold ");
+                for (int i = 0; i < members.Count; i++) if (Live(members[i]) && IsBase(members[i])) sb.Append(members[i].unitClass.ToString()[0]).Append(members[i].uid).Append(' ');
+                sb.Append("| close ");
+                for (int i = 0; i < members.Count; i++) if (Live(members[i]) && !IsBase(members[i])) sb.Append(members[i].unitClass.ToString()[0]).Append(members[i].uid).Append(' ');
+                string line = sb.ToString();
+                string key = line.Substring(line.IndexOf(':'));
+                if (key != lastRoleLog) { lastRoleLog = key; BF3Debug.V(DbgCat.Squad, Tag + " " + line); }
+            }
+        }
+
+        bool IsBase(AIUnit u) { return rolesSplit ? baseSet.Contains(u) : (u.unitClass == UnitClass.Heavy || u.unitClass == UnitClass.Sniper); }
+
         public void PlanLocal(SquadTask task, Vector3 enemy, bool crossfire, bool allowBait = false)
         {
             if (AliveCount == 0) return;
@@ -1891,6 +1975,7 @@ namespace BF3AI
             float dist = to.magnitude;
             Vector3 dir = dist > 0.1f ? to / dist : Vector3.forward;
             Vector3 side = Vector3.Cross(Vector3.up, dir);
+            AssignRoles(dist);
 
             switch (task)
             {
@@ -1947,7 +2032,7 @@ namespace BF3AI
             }
         }
 
-        bool IsMover(AIUnit u) { return (boundPhase == 0) == IsAssaultOrOfficer(u); }
+        bool IsMover(AIUnit u) { return (boundPhase == 0) == !IsBase(u); }
 
         void NewBoundPoint(Vector3 c, Vector3 enemy)
         {
@@ -1961,7 +2046,7 @@ namespace BF3AI
             for (int i = 0; i < members.Count; i++)
             {
                 AIUnit u = members[i]; if (!Live(u)) continue;
-                bool support = u.unitClass == UnitClass.Heavy || u.unitClass == UnitClass.Sniper;
+                bool support = IsBase(u);
                 Issue(u, support ? OrderType.Overwatch : OrderType.Suppress, HoldPointFor(u, side, crossfire), enemy, 3f, false, true);
             }
         }
@@ -1986,7 +2071,7 @@ namespace BF3AI
                 }
                 else
                 {
-                    bool support = u.unitClass == UnitClass.Heavy || u.unitClass == UnitClass.Sniper;
+                    bool support = IsBase(u);
                     Issue(u, support ? OrderType.Overwatch : OrderType.Suppress, HoldPointFor(u, side, crossfire), enemy, 3f, false, true);
                 }
             }
@@ -2181,8 +2266,10 @@ namespace BF3AI
             Add(0.06f); epKills++;
             BF3Debug.V(DbgCat.Cohesion, Tag + " kill +0.06 -> cohesion " + Cohesion.ToString("F2"));
         }
+        float lastCasualtyTime = -99f;
         public void RegisterCasualty()
         {
+            lastCasualtyTime = Time.time;
             Add(-0.10f); epDeaths++;
             BF3Debug.I(DbgCat.Cohesion, Tag + " casualty -0.10 -> cohesion " + Cohesion.ToString("F2") + ", " + AliveUnits() + " alive.");
             RecomputeCommander();
@@ -2194,7 +2281,7 @@ namespace BF3AI
             if (cohAcc < 0.25f) return;      // evaluated 4x/second; dt is the accumulated time
             dt = cohAcc; cohAcc = 0f;
 
-            int total = 0, splitSquads = 0;
+            int total = 0, splitSquads = 0, alarmed = 0;
             float spread = 0f, supp = 0f;
             bool useRooms = CoverMap.RoomsEnabled;
 
@@ -2203,10 +2290,12 @@ namespace BF3AI
                 for (int i = 0; i < squads[s].members.Count; i++)
                 {
                     AIUnit u = squads[s].members[i]; total++;
-                    if (Squad.Live(u)) allLive.Add(u);
+                    if (Squad.Live(u)) { allLive.Add(u); if (u.Alarmed) alarmed++; }
                 }
             int alive = allLive.Count;
             if (alive == 0) return;
+            // Calm = nobody knows of an enemy or is being shot at, and nobody died recently. A calm platoon regroups and its morale recovers.
+            bool calm = alarmed == 0 && Time.time - lastCasualtyTime > 6f;
 
             Vector3 pc = Center();
             int inModal, liveCount;
@@ -2231,8 +2320,9 @@ namespace BF3AI
                 }
             }
 
-            dDrift = (0.5f - Cohesion) * 0.02f;                 // passive drift toward neutral
-            dSpread = -0.04f * spread / alive;                  // scattered within squads
+            dDrift = (0.5f - Cohesion) * (calm ? 0.08f : 0.02f);   // passive drift toward neutral; much faster once the shooting stops
+            dSpread = -0.04f * spread / alive * (calm ? 0.25f : 1f);   // scattered within squads
+            if (Cohesion < 0.12f) dSpread = 0f;                 // scattering alone can never push a platoon into total collapse (that would be a death spiral)
             dSupp = -0.05f * supp / alive;                      // pinned down
             dSplit = -0.03f * splitSquads;                      // squads in another room or far away
             dRoom = -0.05f * outsideRoomFrac;                   // individual units split across rooms
@@ -2257,7 +2347,7 @@ namespace BF3AI
                 string[] names = { "FRACTURED", "NORMAL", "HIGH" };
                 if (lastTier >= 0)
                     BF3Debug.I(DbgCat.Cohesion, Tag + " cohesion tier " + names[lastTier] + " -> " + names[tier] + " (" + Cohesion.ToString("F2") + "). Per second: drift " + dDrift.ToString("+0.000;-0.000") + " spread " + dSpread.ToString("+0.000;-0.000")
-                        + " supp " + dSupp.ToString("+0.000;-0.000") + " split " + dSplit.ToString("+0.000;-0.000") + " rooms " + dRoom.ToString("+0.000;-0.000") + " progress " + dProgress.ToString("+0.000;-0.000"));
+                        + " supp " + dSupp.ToString("+0.000;-0.000") + " split " + dSplit.ToString("+0.000;-0.000") + " rooms " + dRoom.ToString("+0.000;-0.000") + " progress " + dProgress.ToString("+0.000;-0.000") + (calm ? " [calm]" : ""));
                 lastTier = tier;
             }
             if (Time.time >= nextCohLog && BF3Debug.On(DbgLevel.Verbose, DbgCat.Cohesion))
@@ -2265,7 +2355,7 @@ namespace BF3AI
                 nextCohLog = Time.time + 3f;
                 BF3Debug.V(DbgCat.Cohesion, Tag + " cohesion " + Cohesion.ToString("F2") + "  /s: drift " + dDrift.ToString("+0.000;-0.000") + " spread " + dSpread.ToString("+0.000;-0.000") + " supp " + dSupp.ToString("+0.000;-0.000")
                     + " split " + dSplit.ToString("+0.000;-0.000") + " rooms " + dRoom.ToString("+0.000;-0.000") + " bleed " + dBleed.ToString("+0.000;-0.000") + " progress " + dProgress.ToString("+0.000;-0.000")
-                    + "  | modal room " + (CoverMap.I != null ? CoverMap.I.RoomName(modalRoom) : "-") + ", " + (outsideRoomFrac * 100f).ToString("F0") + "% of units elsewhere, " + splitSquads + " squad(s) split");
+                    + "  | modal room " + (CoverMap.I != null ? CoverMap.I.RoomName(modalRoom) : "-") + ", " + (outsideRoomFrac * 100f).ToString("F0") + "% of units elsewhere, " + splitSquads + " squad(s) split, " + alarmed + "/" + alive + " alarmed, " + (calm ? "CALM (recovering)" : "not calm"));
             }
         }
 

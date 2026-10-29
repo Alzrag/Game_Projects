@@ -168,8 +168,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2879df971e66995b1b5b7cfbdb4915a9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Blasters
-  fireRate: 100
-  isHoldable: 1
+  fireRate: 15
+  isHoldable: 0
   isBurstable: 0
   volleysPerBurst: 3
   burstDelay: 0.08
@@ -179,20 +179,51 @@ MonoBehaviour:
   aimSettings:
     canAim: 1
     zoomFactor: 2
-    isScopable: 0
+    isScopable: 1
     scopeUIEffect: {fileID: 0}
+  zoomTransitionSpeed: 10
   damage: 10
   spreadX: 0.1
   spreadY: 0.1
   magazineSize: 30
-  reticleSprite: {fileID: 0}
+  aimAtCrosshair: 1
+  minAimDistance: 3
+  aimMaxDistance: 500
+  aimRayMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  reloadTime: 2
+  autoReloadWhenEmpty: 1
+  reloadAnimator: {fileID: 0}
+  reloadTrigger: Reload
+  reloadSpeedParam: 1
+  reloadAnimationLength: 1
+  reloadSound: {fileID: 0}
+  reloadSoundVolume: 1
+  showAmmoOnScreen: 1
+  ammoHudCorner: 0
+  ammoHudMargin: {x: 20, y: 20}
+  reticleSprite: {fileID: -624991078161668788, guid: c79c2c78fa88f56c3acb8492bc9e767f, type: 3}
+  showReticleWhenNotAiming: 1
+  reticleColor: {r: 1, g: 1, b: 1, a: 1}
+  reticleScale: 1
+  reticleOffset: {x: 0, y: 0}
+  scopeScale: 1
+  scopeBlackBars: 1
+  scopeBarColor: {r: 0, g: 0, b: 0, a: 1}
+  scopeFadeSpeed: 14
+  uiSortingOrder: 100
   firePoints:
   - {fileID: 5793675133124871905}
   projectilesPerShot: 1
   bulletPrefab: {fileID: 4528451882508599201, guid: 4f2b8c4d68996c202af98660e3c429cc, type: 3}
   bulletSpeed: 50
   projectileRotationOffset: {x: 90, y: 0, z: 0}
-  triggerThreshold: 0.1
+  triggerThreshold: 0.00000001
+  botLoadoutId: 
+  botClass: 0
+  botWeight: 1
+  botRange: 0
 --- !u!114 &2627250596664525606
 MonoBehaviour:
   m_ObjectHideFlags: 0

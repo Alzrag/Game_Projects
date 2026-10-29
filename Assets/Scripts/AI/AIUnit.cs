@@ -36,7 +36,23 @@ namespace BF3AI
         public float spoolTime;
         public float Range { get { return weaponRange > 0f ? weaponRange : viewRange * 1.2f; } }
 
+        // ---- range accuracy (see Marksmanship.cs); recomputed by Marksmanship.Bake whenever the weapon changes
+        public UnitClass cls;
+        public float zoom;                         // 0 = the class's normal optics
+        public float refRate, refSpread, refRange; // the class's own base values, the yardstick the weapon is compared with
+        public float accCenter = 15f, accWidth = 0.6f, accQ = 1f, bandLo = 6f, bandHi = 30f;
+        /// <summary>0..1: how well this class + weapon suit shooting at that range.</summary>
+        public float Fit(float range) { return Marksmanship.Fit(this, range); }
+
         public static ClassProfile For(UnitClass c)
+        {
+            ClassProfile p = Raw(c);
+            p.cls = c; p.refRate = p.shotsPerSecond; p.refSpread = p.spreadDeg; p.refRange = p.viewRange * 1.2f;
+            Marksmanship.Bake(p);
+            return p;
+        }
+
+        static ClassProfile Raw(UnitClass c)
         {
             switch (c)
             {
@@ -77,6 +93,7 @@ namespace BF3AI
         public int burst = 1;             // trigger pulls fired back to back
         public float burstDelay = 0.08f;
         public float spool = 0f;          // seconds of continuous firing intent before the first shot (heavy weapons)
+        public float zoom = 0f;           // optics magnification (Blaster aimSettings.zoomFactor); 0 = the class's normal optics. Shifts the bot's best range outward
 
         public static LoadoutClass ToLoadoutClass(UnitClass c)
         {
@@ -96,13 +113,14 @@ namespace BF3AI
                  + " rate " + fireRate.ToString("0.##", CultureInfo.InvariantCulture) + "/s dmg " + damage.ToString("0.##", CultureInfo.InvariantCulture)
                  + " spread " + spread.ToString("0.##", CultureInfo.InvariantCulture) + " mag " + magazine + " reload " + reload.ToString("0.##", CultureInfo.InvariantCulture)
                  + "s range " + (range > 0f ? range.ToString("0") : "default") + " speed " + (bulletSpeed > 0f ? bulletSpeed.ToString("0") : "weapon")
-                 + " pellets " + projectiles + " burst " + burst + " spool " + spool.ToString("0.##", CultureInfo.InvariantCulture);
+                 + " pellets " + projectiles + " burst " + burst + " spool " + spool.ToString("0.##", CultureInfo.InvariantCulture)
+                 + " zoom " + (zoom > 0f ? zoom.ToString("0.#", CultureInfo.InvariantCulture) + "x" : "class");
         }
     }
 
     public static class LoadoutStore
     {
-        public static readonly string[] Columns = { "id", "class", "weight", "weapon", "fireRate", "damage", "spread", "magazine", "reload", "range", "bulletSpeed", "projectiles", "burst", "burstDelay", "spool" };
+        public static readonly string[] Columns = { "id", "class", "weight", "weapon", "fireRate", "damage", "spread", "magazine", "reload", "range", "bulletSpeed", "projectiles", "burst", "burstDelay", "spool", "zoom" };
         public static readonly List<Loadout> all = new List<Loadout>();
         public static string fileName = "BF3AI_Loadouts.csv";
         public static string weaponsPath = "Weapons";
@@ -118,20 +136,21 @@ namespace BF3AI
             "# BF3AI weapon loadouts. One row = one weapon set-up. Each life every bot picks one row at random (weighted) among the rows for its class.\n" +
             "# class: Assault | Heavy | Sniper | Officer | Any.  'Any' rows are used only for classes that have no row of their own.  weight: relative chance (0 = disabled).\n" +
             "# weapon: name of a weapon prefab in Assets/Resources/<Weapons folder>/ (the same prefabs WeaponManager loads). Leave empty for no model (a generated tracer is used).\n" +
-            "# fireRate: trigger pulls per second. spread: weapon spread in degrees, added to the bot's own aim error. magazine: >100 = infinite. range: metres, 0 = class default.\n" +
+            "# fireRate: trigger pulls per second. spread: weapon spread in degrees; a tight weapon raises the bot's hit chance in its best range band, a loose one lowers it. magazine: >100 = infinite. range: metres, 0 = class default.\n" +
             "# bulletSpeed: m/s, 0 = from the weapon's Blaster. projectiles: per firepoint per pull (shotguns). burst/burstDelay: pulls per burst. spool: seconds before first shot.\n" +
+            "# zoom: optics magnification (your Blaster's Zoom Factor); more zoom moves the bot's best range outward, 0 = the class's normal optics. Bots also factor range, projectiles and fire rate into where they shoot well and who they pick as targets.\n" +
             "# Lines starting with # are ignored. Columns can be in any order as long as the header row names them. After editing, restart play mode (or use the SquadManager menu: BF3AI > Reload Loadouts CSV).\n";
 
         const string ExampleRows =
-            "assault_carbine,Assault,3,,6,12,0,30,2,0,0,1,1,0.08,0\n" +
-            "assault_burst,Assault,2,,4,14,0.3,24,2.2,0,0,1,3,0.07,0\n" +
-            "assault_scatter,Assault,1,,1.2,7,2.5,8,2.5,25,0,5,1,0.08,0\n" +
-            "heavy_lmg,Heavy,3,,12,9,0.8,300,4,0,0,1,1,0.08,0.8\n" +
-            "heavy_repeater,Heavy,1,,8,13,0.4,60,3.5,0,0,1,1,0.08,0.5\n" +
-            "sniper_rifle,Sniper,3,,0.7,60,0,5,3,0,90,1,1,0.08,0\n" +
-            "officer_pistol,Officer,3,,5,14,0.2,24,2,0,0,1,1,0.08,0\n" +
-            "officer_burst,Officer,1,,3,15,0.2,30,2.4,0,0,1,3,0.09,0\n" +
-            "any_fallback,Any,1,,6,11,0,30,2,0,0,1,1,0.08,0\n";
+            "assault_carbine,Assault,3,,6,12,0,30,2,0,0,1,1,0.08,0,0\n" +
+            "assault_burst,Assault,2,,4,14,0.3,24,2.2,0,0,1,3,0.07,0,0\n" +
+            "assault_scatter,Assault,1,,1.2,7,2.5,8,2.5,25,0,5,1,0.08,0,1\n" +
+            "heavy_lmg,Heavy,3,,12,9,0.8,300,4,0,0,1,1,0.08,0.8,0\n" +
+            "heavy_repeater,Heavy,1,,8,13,0.4,60,3.5,0,0,1,1,0.08,0.5,0\n" +
+            "sniper_rifle,Sniper,3,,0.7,60,0,5,3,0,90,1,1,0.08,0,4\n" +
+            "officer_pistol,Officer,3,,5,14,0.2,24,2,0,0,1,1,0.08,0,0\n" +
+            "officer_burst,Officer,1,,3,15,0.2,30,2.4,0,0,1,3,0.09,0,0\n" +
+            "any_fallback,Any,1,,6,11,0,30,2,0,0,1,1,0.08,0,0\n";
 
         public static string ExampleText() { return ExampleHelp.Replace("\\n", "\n") + string.Join(",", Columns) + "\n" + ExampleRows.Replace("\\n", "\n"); }
 
@@ -233,9 +252,9 @@ namespace BF3AI
             lo.weapon = get("weapon");
             lo.weight = num("weight", 1f); lo.fireRate = num("fireRate", 6f); lo.damage = num("damage", 10f); lo.spread = num("spread", 0f);
             float mag = num("magazine", 999f); lo.reload = num("reload", 2f); lo.range = num("range", 0f); lo.bulletSpeed = num("bulletSpeed", 0f);
-            float proj = num("projectiles", 1f), burst = num("burst", 1f); lo.burstDelay = num("burstDelay", 0.08f); lo.spool = num("spool", 0f);
-            float[] chk = { lo.weight, lo.fireRate, lo.damage, lo.spread, mag, lo.reload, lo.range, lo.bulletSpeed, proj, burst, lo.burstDelay, lo.spool };
-            string[] nm = { "weight", "fireRate", "damage", "spread", "magazine", "reload", "range", "bulletSpeed", "projectiles", "burst", "burstDelay", "spool" };
+            float proj = num("projectiles", 1f), burst = num("burst", 1f); lo.burstDelay = num("burstDelay", 0.08f); lo.spool = num("spool", 0f); lo.zoom = num("zoom", 0f);
+            float[] chk = { lo.weight, lo.fireRate, lo.damage, lo.spread, mag, lo.reload, lo.range, lo.bulletSpeed, proj, burst, lo.burstDelay, lo.spool, lo.zoom };
+            string[] nm = { "weight", "fireRate", "damage", "spread", "magazine", "reload", "range", "bulletSpeed", "projectiles", "burst", "burstDelay", "spool", "zoom" };
             for (int i = 0; i < chk.Length; i++)
                 if (float.IsNaN(chk[i]) || float.IsInfinity(chk[i]) || chk[i] < 0f) { why = "'" + nm[i] + "' is not a valid non-negative number"; return false; }
             if (lo.fireRate <= 0f) { why = "fireRate must be above 0"; return false; }
@@ -290,7 +309,17 @@ namespace BF3AI
             v["fireRate"] = lo.fireRate.ToString("0.###", inv); v["damage"] = lo.damage.ToString("0.###", inv); v["spread"] = lo.spread.ToString("0.###", inv);
             v["magazine"] = lo.magazine.ToString(inv); v["reload"] = lo.reload.ToString("0.###", inv); v["range"] = lo.range.ToString("0.###", inv);
             v["bulletSpeed"] = lo.bulletSpeed.ToString("0.###", inv); v["projectiles"] = lo.projectiles.ToString(inv); v["burst"] = lo.burst.ToString(inv);
-            v["burstDelay"] = lo.burstDelay.ToString("0.###", inv); v["spool"] = lo.spool.ToString("0.###", inv);
+            v["burstDelay"] = lo.burstDelay.ToString("0.###", inv); v["spool"] = lo.spool.ToString("0.###", inv); v["zoom"] = lo.zoom.ToString("0.###", inv);
+            // CSVs made before the zoom column existed: add it to the header (rows without the cell simply read as 0 = class default).
+            if (header.FindIndex(delegate (string x) { return x.Equals("zoom", StringComparison.OrdinalIgnoreCase); }) < 0)
+            {
+                for (int i = 0; i < lines.Count; i++)
+                {
+                    string t = lines[i].Trim();
+                    if (t.Length == 0 || t[0] == '#') continue;
+                    if (IsHeader(SplitCsv(t))) { lines[i] = lines[i].TrimEnd() + ",zoom"; header.Add("zoom"); break; }
+                }
+            }
             List<string> dropped = new List<string>();
             for (int k = 0; k < Columns.Length; k++)
                 if (header.FindIndex(delegate (string x) { return x.Equals(Columns[k], StringComparison.OrdinalIgnoreCase); }) < 0) dropped.Add(Columns[k]);
@@ -534,6 +563,11 @@ namespace BF3AI
             float prox = 1f - Mathf.Clamp01(d / Mathf.Max(1f, u.profile.viewRange));
             float s = prox * (u.unitClass == UnitClass.Sniper ? 0.25f : 1f);
 
+            // range suitability: each unit prefers the enemies its own class and weapon can actually hurt (snipers the far ones, assaults the near ones)
+            float fit = u.profile.Fit(d);
+            s += 1.0f * fit;
+            if (fit < 0.08f) s -= 0.3f;
+
             if (u.combatant.lastAttacker == t && Time.time - u.combatant.lastDamageTime < 4f) s += 0.8f;
             if (t.regenPerSecond > 0.5f) s += 0.5f * w;
             if (t.isHealing) s += 0.9f * w;
@@ -626,6 +660,15 @@ namespace BF3AI
         Vector3 suppressPoint, peekPos, lastDest = new Vector3(1e6f, 0, 1e6f), laneGoal, laneMid;
         bool lanePassed;
 
+        /// <summary>True while this unit knows of an enemy or is being shot at. A platoon where nobody is alarmed is 'calm' and recovers cohesion.</summary>
+        public bool Alarmed { get { return hasThreat || suppression > 0.05f; } }
+
+        // shot statistics for this life, by fire mode (logged at death, in snapshots and in reports)
+        int shotsAimed, hitsAimed, shotsSupp, hitsSupp, shotsBlind, hitsBlind;
+        float expectAimed;                                   // sum of the predicted hit chances of aimed shots (compare with hitsAimed)
+        float settleT; Combatant settleTarget;                // seconds of steady aim on the current target
+        string ShotStats { get { return "aimed " + hitsAimed + "/" + shotsAimed + (shotsAimed > 0 ? " (expected " + (100f * expectAimed / shotsAimed).ToString("F0") + "%)" : "") + " suppress " + hitsSupp + "/" + shotsSupp + " blind " + hitsBlind + "/" + shotsBlind; } }
+
         float Agg { get { return Mathf.Clamp01(personality.aggression + LearningMemory.Get(team).aggrMod[(int)unitClass]); } }
         float Cohesion { get { return squad != null ? squad.Cohesion : 0.5f; } }
         bool Panicking
@@ -680,6 +723,7 @@ namespace BF3AI
             nextThink = Time.time + Random.value * 0.3f;
             errCount = 0; faultedUntil = 0f; frozen = false; respawnScheduled = false; stuckSince = -1f; stuckCount = 0;
             shots = 0; hits = 0; room = -1;
+            shotsAimed = hitsAimed = shotsSupp = hitsSupp = shotsBlind = hitsBlind = 0; expectAimed = 0f; settleT = 0f; settleTarget = null;
             try { EquipLoadout(); }
             catch (Exception e) { BF3Debug.Exception("EquipLoadout", e, this, this); }
             if (BF3Debug.On(DbgLevel.Info, DbgCat.Spawn))
@@ -704,7 +748,8 @@ namespace BF3AI
             profile.magazine = lo.magazine; profile.reload = lo.reload;
             profile.weaponRange = lo.range; profile.bulletSpeed = lo.bulletSpeed;
             profile.pellets = lo.projectiles; profile.burst = lo.burst; profile.burstDelay = lo.burstDelay;
-            profile.spoolTime = lo.spool;
+            profile.spoolTime = lo.spool; profile.zoom = lo.zoom;
+            Marksmanship.Bake(profile);       // class + weapon -> this life's sweet spot and useful band
             ammo = lo.magazine; reloading = false; burstLeft = 0; spoolT = 0f;
 
             BuildWeaponVisual(lo);
@@ -804,7 +849,7 @@ namespace BF3AI
                 BF3Debug.I(DbgCat.Combat, Tag + " DIED at " + transform.position.ToString("F1") + " room=" + (CoverMap.I != null ? CoverMap.I.RoomName(room) : "-")
                     + " after " + Uptime.ToString("F0") + "s: mode=" + mode + " order=" + (order != null ? order.type.ToString() : "none")
                     + (cover != null ? " cover=" + (cover.IsLow ? "low" : "full") + (movingToCover ? "(en route)" : "(in it)") : " no-cover")
-                    + " shots/hits=" + shots + "/" + hits + " kills=" + kills + " suppression=" + suppression.ToString("F2") + " cohesion=" + Cohesion.ToString("F2")
+                    + " shots/hits=" + shots + "/" + hits + " (" + ShotStats + ") kills=" + kills + " suppression=" + suppression.ToString("F2") + " cohesion=" + Cohesion.ToString("F2")
                     + " killer=" + (killer != null ? killer.name + " at " + Vector3.Distance(killer.transform.position, transform.position).ToString("F0") + " m" : "none"), this, uid);
             LifeRecord rec = new LifeRecord
             {
@@ -1000,7 +1045,8 @@ namespace BF3AI
             Contact tc = ContactFor(target);
             float agg = Agg;
             float hp = combatant.health / combatant.maxHealth;
-            float charge = Mathf.Lerp(14f, 30f, agg), retreat = Mathf.Lerp(35f, 65f, agg);
+            // how far out the assault will charge / how far is too far to be here at all, scaled to what its weapon is good at (default band edge ~22 m)
+            float charge = Mathf.Clamp(Mathf.Lerp(0.65f, 1.35f, agg) * profile.bandHi, 5f, 45f), retreat = Mathf.Max(charge * 1.6f, Mathf.Lerp(1.6f, 3.0f, agg) * profile.bandHi);
             bool backup = squad != null && squad.AliveCount >= 3 && Cohesion > 0.5f;
             bool avoidDuel = LearningMemory.Get(team).Respect(target) > 0.35f && !backup;
 
@@ -1052,6 +1098,8 @@ namespace BF3AI
             bool skittish = personality.holdGround < 0.35f && hp < 0.35f;   // rare cautious/skittish heavy
             Vector3? g = squad != null ? (Vector3?)squad.MateCenter(this) : null;
             if (skittish) RequestCover(20f, g, 0.8f, 0f, false, Mode.Retreat);
+            else if (tc != null && order == null && Vector3.Distance(transform.position, tc.PredictedPos) > profile.bandHi * 1.2f && Time.time >= nextCoverSearch)
+                RequestCover(22f, tc.PredictedPos, 1.2f, 0f, false, Mode.SeekCover);      // target is beyond what this weapon is good at: take ground nearer to it
             else if (!CoverIsGood) RequestCover(14f, null, 0f, 0f, false, Mode.SeekCover);
 
             if (mode == Mode.InCover && cover != null) InCoverBehavior();
@@ -1066,13 +1114,13 @@ namespace BF3AI
         void ThinkSniper()
         {
             Contact tc = ContactFor(target);
-            bool tooClose = nearestThreatDist < profile.idealMin * 0.5f;
+            bool tooClose = nearestThreatDist < profile.bandLo * 0.7f;
             bool flanked = IsFlanked();
             bool noSight = tc == null || (!tc.visible && tc.Age > 6f);
             if (tooClose || flanked || cover == null || (mode == Mode.InCover && noSight && Time.time > coverHoldUntil))
             {
                 nextCoverSearch = flanked || tooClose ? 0f : nextCoverSearch;   // flanked: re-search immediately
-                if (!RequestCover(50f, null, 0f, profile.idealMin * 0.8f, true, Mode.Relocate) && tooClose)
+                if (!RequestCover(50f, null, 0f, profile.bandLo * 0.8f, true, Mode.Relocate) && tooClose)
                 {
                     Vector3 away = transform.position - threats[NearestThreatIndex()]; away.y = 0f;
                     MoveTo(Tactics.Nav(transform.position + away.normalized * 20f)); mode = Mode.Relocate;
@@ -1108,14 +1156,30 @@ namespace BF3AI
         {
             mode = Mode.Panic; peeking = false;
             Contact tc = ContactFor(target);
-            if (hasThreat && Random.value < 0.6f)   // abandon cover and bolt
+            Vector3 mates = squad != null ? squad.MateCenter(this) : transform.position;
+            Vector3 toMates = Tactics.Flat(mates - transform.position);
+
+            if (!hasThreat)
+            {
+                // Nothing known and nothing shooting at us: stop running and rally back to the squad.
+                // (Being scattered is what keeps cohesion low, so standing in a corner would never recover.)
+                fireMode = FireMode.None;
+                if (cover != null) ReleaseCover();
+                combatant.crouched = false; movingToCover = false;
+                if (toMates.magnitude > 5f) { mode = Mode.Advance; MoveTo(Tactics.Nav(mates, 6f)); }
+                return;
+            }
+
+            if (Random.value < 0.6f)   // abandon cover and bolt, but away from the enemy AND toward friends, not into a corner
             {
                 ReleaseCover(); combatant.crouched = false;
                 Vector3 away = transform.position - threats[NearestThreatIndex()]; away.y = 0f;
                 if (away.sqrMagnitude < 0.1f) away = -transform.forward;
-                MoveTo(Tactics.Nav(transform.position + away.normalized * 12f + Random.insideUnitSphere * 3f, 6f));
+                Vector3 dir = away.normalized;
+                if (toMates.sqrMagnitude > 4f) dir = (dir + 0.6f * toMates.normalized).normalized;
+                MoveTo(Tactics.Nav(transform.position + dir * 12f + Random.insideUnitSphere * 3f, 6f));
             }
-            FireAtTarget(tc, true);   // spread is doubled while panicking (see HandleFire)
+            FireAtTarget(tc, true);   // spread is increased while panicking (see HandleFire)
         }
 
         // ----------------------------------------------------------------- orders
@@ -1395,7 +1459,15 @@ namespace BF3AI
         {
             if (tc == null) { fireMode = FireMode.None; return; }
             suppressPoint = tc.PredictedPos + Vector3.up;
-            if (tc.visible && exposed) fireMode = FireMode.Aimed;
+            if (tc.visible && exposed)
+            {
+                fireMode = FireMode.Aimed;
+                // Fire discipline: do not burn ammo on shots this class + weapon cannot land. Hold fire, or lay suppressing fire if the squad
+                // has asked for it (so mates who are better placed can reposition or close the distance).
+                float rng = Vector3.Distance(transform.position, tc.PredictedPos);
+                if (profile.Fit(rng) < 0.06f)
+                    fireMode = (order != null && order.Active && (order.type == OrderType.Suppress || order.type == OrderType.Overwatch)) ? FireMode.Suppress : FireMode.None;
+            }
             else if (unitClass == UnitClass.Sniper) fireMode = FireMode.None;   // snipers never spray blind
             else if (tc.Age < 8f && unitClass == UnitClass.Heavy) fireMode = FireMode.Suppress;
             else if (tc.Age < 4f) fireMode = FireMode.Blind;                   // blind-fire at the last-known position (over low cover / round corners); bullets stop on any solid
@@ -1416,6 +1488,11 @@ namespace BF3AI
             float dt = Time.deltaTime;
             bool wants = fireMode != FireMode.None;
             bool infinite = profile.magazine > 100;
+
+            // steady-aim timer: builds while standing still on one target, drains when moving, switching target or not aiming
+            if (target != settleTarget) { settleTarget = target; settleT = 0f; }
+            if (fireMode == FireMode.Aimed && agent.velocity.sqrMagnitude < 0.25f) settleT = Mathf.Min(Marksmanship.SettleTime(unitClass), settleT + dt);
+            else settleT = Mathf.Max(0f, settleT - dt * (fireMode == FireMode.Aimed ? 3f : 0.5f));
 
             if (profile.spoolTime > 0f) spoolT = wants ? Mathf.Min(profile.spoolTime, spoolT + dt) : Mathf.Max(0f, spoolT - dt);
             if (!wants) burstLeft = 0;
@@ -1456,12 +1533,27 @@ namespace BF3AI
             }
             nextShot = Time.time + interval;
 
-            float spread = profile.spreadDeg * (1.4f - personality.marksmanship * 0.8f) * (1f + suppression * 1.5f);
-            if (agent.velocity.magnitude > 1f) spread *= 1.5f;
-            if (fireMode == FireMode.Suppress) spread = Mathf.Max(spread, 3f);
-            if (fireMode == FireMode.Blind) spread *= 3f;
-            if (Panicking) spread *= 2.5f;   // panicked units miss
-            spread += profile.weaponSpread;
+            bool moving = agent.velocity.magnitude > 1f;
+            float aimScale = SquadManager.Instance != null ? SquadManager.Instance.aimErrorScale : 1f;   // global accuracy knob
+            bool aimed = fireMode == FireMode.Aimed;
+            float sigma = 0f, spread = 0f, pHit = 0f;
+            if (aimed)
+            {
+                // Aimed fire: hit chance comes from range + class + weapon (Marksmanship); the error is sized to give exactly that chance.
+                float st = Marksmanship.SettleTime(unitClass);
+                pHit = Marksmanship.HitChance(profile, dist, personality.marksmanship, st > 0f ? settleT / st : 1f, moving, suppression, Panicking);
+                sigma = Marksmanship.SigmaDeg(pHit, dist) * aimScale;
+            }
+            else
+            {
+                // Suppressing / blind fire is deliberately sloppy.
+                spread = profile.spreadDeg * (1.4f - personality.marksmanship * 0.8f) * (1f + suppression * 1.5f);
+                if (moving) spread *= 1.25f;
+                if (fireMode == FireMode.Suppress) spread = Mathf.Max(spread, 3f);
+                if (fireMode == FireMode.Blind) spread *= 3f;
+                if (Panicking) spread *= 2f;
+                spread *= aimScale;
+            }
 
             int fpCount = firePoints != null ? firePoints.Length : 0;
             int total = Mathf.Clamp(Mathf.Max(1, fpCount) * profile.pellets, 1, 24);
@@ -1475,11 +1567,15 @@ namespace BF3AI
                 Vector3 o = fpCount > 0 ? firePoints[i % fpCount].position : origin;
                 Vector3 d = aim - o;
                 d = d.sqrMagnitude > 0.0001f ? d.normalized : dir;
-                d = Quaternion.AngleAxis(Random.Range(-spread, spread), Vector3.up)
-                  * Quaternion.AngleAxis(Random.Range(-spread, spread), transform.right) * d;
+                float ex = aimed ? Tactics.AimErrorSigma(sigma) : Tactics.AimError(spread);
+                float ey = aimed ? Tactics.AimErrorSigma(sigma) : Tactics.AimError(spread);
+                d = Quaternion.AngleAxis(ex, Vector3.up) * Quaternion.AngleAxis(ey, transform.right) * d;
                 if (AIWorld.Fire(combatant, o, d, range, profile.damage, spec, i == 0)) anyHit = true;
             }
             if (anyHit) hits++;
+            if (fireMode == FireMode.Aimed) { shotsAimed++; expectAimed += pHit; if (anyHit) hitsAimed++; }
+            else if (fireMode == FireMode.Suppress) { shotsSupp++; if (anyHit) hitsSupp++; }
+            else if (fireMode == FireMode.Blind) { shotsBlind++; if (anyHit) hitsBlind++; }
         }
 
         void TryGrenade(Contact tc)
@@ -1609,6 +1705,7 @@ namespace BF3AI
             else sb.Append(" | no target");
             sb.Append(" | known ").Append(known.Count).Append(" supp ").Append(suppression.ToString("F2")).Append(" shots/hits ").Append(shots).Append('/').Append(hits).Append(" kills ").Append(kills)
               .Append(" uptime ").Append(profile != null ? Uptime.ToString("F0") : "-").Append("s")
+              .Append(" (").Append(ShotStats).Append(")")
               .Append(" | gun ").Append(loadout != null ? loadout.id : "-").Append(profile != null && profile.magazine <= 100 ? " ammo " + ammo + "/" + profile.magazine : "").Append(reloading ? " RELOADING" : "");
             if (squad != null) sb.Append(" | ").Append(squad.Tag).Append(squad.platoon != null ? "/" + squad.platoon.Tag + " " + squad.platoon.Strategy + " coh " + squad.platoon.Cohesion.ToString("F2") : "/no-platoon");
             else sb.Append(" | NO SQUAD");

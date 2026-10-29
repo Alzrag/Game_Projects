@@ -172,7 +172,7 @@ MonoBehaviour:
     spawnPoints:
     - {fileID: 130962049}
     objectives: []
-    squadsPerTeam: 0
+    squadsPerTeam: 1
     respawnDelay: 6
   obstacleMask:
     serializedVersion: 2
@@ -194,6 +194,7 @@ MonoBehaviour:
   fileLogLevel: 4
   fileLogCategories: -1
   fileSnapshotInterval: 2
+  aimErrorScale: 1
   useLoadouts: 1
   loadoutFile: BF3AI_Loadouts.csv
   weaponsResourcesPath: Weapons
@@ -8835,8 +8836,8 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 382070562}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0.35355, y: 47.7, z: -128.15}
+  m_LocalRotation: {x: -0, y: -0.99119157, z: -0, w: 0.13243617}
+  m_LocalPosition: {x: -7.481626, y: 3.6, z: 73.60374}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -8847,7 +8848,7 @@ Transform:
   - {fileID: 1920445736}
   - {fileID: 330585546}
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: -164.779, z: 0}
 --- !u!143 &382070567
 CharacterController:
   m_ObjectHideFlags: 0
