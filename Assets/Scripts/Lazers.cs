@@ -26,14 +26,59 @@ public class Lazers : MonoBehaviour
     [Tooltip("Destroy the bolt on any hit, even if the thing it hit has no health component.")]
     public bool destroyOnAnyHit = true;
 
+    public enum ColliderMode { Trigger, Disabled }
+    [Tooltip("Bolts find their targets with a ray, so their own colliders are never needed for physics. Trigger = colliders stay but can never push or block anything (and are ignored by rays that skip triggers). Disabled = switched off completely.")]
+    public ColliderMode colliderMode = ColliderMode.Trigger;
+
     [Header("Effects (optional)")]
     public GameObject impactEffectPrefab;
 
+    private static readonly RaycastHit[] hitBuffer = new RaycastHit[16];
     private Vector3 previousPosition;
     private bool hasBeenInitialized;
 
-    // BF3AI: who fired this bolt (set by Blaster). Used for team checks and kill credit.
+    // BF3AI: who fired this bolt (set by Blaster through SetOwner). Used for kill credit.
     [HideInInspector] public BF3AI.Combatant owner;
+    // The shooter's team is stored on the bolt itself, so friendly fire is still ignored even if the shooter dies or is destroyed mid-flight.
+    [HideInInspector] public int team;
+    [HideInInspector] public bool hasTeam;
+
+    /// <summary>Tags the bolt with its shooter and the shooter's team. Teammates (and the shooter) are never hurt by it.</summary>
+    public void SetOwner(BF3AI.Combatant shooter)
+    {
+        owner = shooter;
+        hasTeam = shooter != null;
+        team = shooter != null ? shooter.team : 0;
+    }
+
+    /// <summary>True if a bolt tagged (owner, team) must pass through this combatant instead of hitting it.</summary>
+    public static bool IsFriendly(BF3AI.Combatant target, BF3AI.Combatant owner, bool hasTeam, int team)
+    {
+        if (target == null) return false;
+        if (target == owner) return true;
+        if (hasTeam) return target.team == team;
+        return owner != null && target.team == owner.team;
+    }
+
+    // A bolt is never a physical object: its colliders are made triggers (or switched off) and any Rigidbody is made kinematic,
+    // so it can never shove the player, snag on a teammate or block another bolt, whatever the prefab was set up with.
+    private void Awake()
+    {
+        Collider[] cols = GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < cols.Length; i++)
+        {
+            if (cols[i] == null) continue;
+            if (colliderMode == ColliderMode.Disabled) cols[i].enabled = false;
+            else cols[i].isTrigger = true;
+        }
+        Rigidbody[] bodies = GetComponentsInChildren<Rigidbody>(true);
+        for (int i = 0; i < bodies.Length; i++)
+        {
+            if (bodies[i] == null) continue;
+            bodies[i].isKinematic = true;
+            bodies[i].useGravity = false;
+        }
+    }
 
     /// <summary>
     /// Called by Blaster.Shoot() right after Instantiate. Sets the bolt's
@@ -79,17 +124,27 @@ public class Lazers : MonoBehaviour
 
         if (distance > 0f)
         {
-            if (Physics.Raycast(previousPosition, delta.normalized, out RaycastHit hit, distance, hitMask, QueryTriggerInteraction.Ignore))
+            // Walk every hit along this frame's path, nearest first, and use the first one that is not a teammate.
+            int n = Physics.RaycastNonAlloc(previousPosition, delta.normalized, hitBuffer, distance, hitMask, QueryTriggerInteraction.Ignore);
+            while (n > 0)
             {
-                HandleHit(hit);
+                int best = 0;
+                for (int i = 1; i < n; i++) if (hitBuffer[i].distance < hitBuffer[best].distance) best = i;
+                RaycastHit hit = hitBuffer[best];
+                hitBuffer[best] = hitBuffer[n - 1]; n--;
+                if (HandleHit(hit)) break;
             }
         }
 
         previousPosition = currentPosition;
     }
 
-    private void HandleHit(RaycastHit hit)
+    // Returns true if the bolt was used up by this hit; false if it passed through (a teammate, or something ignored).
+    private bool HandleHit(RaycastHit hit)
     {
+        BF3AI.Combatant who = hit.collider != null ? hit.collider.GetComponentInParent<BF3AI.Combatant>() : null;
+        if (IsFriendly(who, owner, hasTeam, team)) return false;   // never snap to or stop at a teammate
+
         // Snap the bolt to the exact impact point before doing anything else,
         // so effects and destruction look right.
         transform.position = hit.point;
@@ -98,12 +153,10 @@ public class Lazers : MonoBehaviour
         BF3AI.Combatant target = hit.collider.GetComponentInParent<BF3AI.Combatant>();
         if (target != null)
         {
-            // Your own body and teammates are ignored: the bolt keeps flying.
-            if (target == owner || (owner != null && target.team == owner.team)) return;
             target.TakeDamage(damage, owner);
             SpawnImpactEffect(hit.point, hit.normal);
             Destroy(gameObject);
-            return;
+            return true;
         }
 
         // Try to damage whatever we hit, if it exposes a compatible interface/component.
@@ -116,11 +169,12 @@ public class Lazers : MonoBehaviour
         {
             // Hit something with no health component and we're configured to
             // ignore those hits (e.g. pass through decorative geometry).
-            return;
+            return false;
         }
 
         SpawnImpactEffect(hit.point, hit.normal);
         Destroy(gameObject);
+        return true;
     }
 
     private void SpawnImpactEffect(Vector3 position, Vector3 normal)

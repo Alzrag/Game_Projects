@@ -59,8 +59,20 @@ public class Blaster : MonoBehaviour
     [Header("Aiming (bolts go where the crosshair points)")]
     [Tooltip("On: a ray from the centre of the camera finds the impact point, and every bolt flies from its fire point to that point, so the reticle is always accurate. Off: bolts fly straight out of the fire points.")]
     public bool aimAtCrosshair = true;
-    [Tooltip("If the impact point is closer than this to the fire point (metres), bolts fly straight out of the fire point instead, so point-blank shots never veer sideways or backwards.")]
-    public float minAimDistance = 3f;
+    [Tooltip("At or below this distance (metres, impact point to fire point) bolts fly straight out of the fire point. Beyond it they blend towards the crosshair point over Aim Blend Distance. 0 = always aim at the crosshair point.")]
+    public float minAimDistance = 0.25f;
+    [Tooltip("Metres over which the bolt direction blends from 'straight out of the fire point' to 'at the crosshair point', starting at Min Aim Distance. 0 = a hard switch.")]
+    public float aimBlendDistance = 1f;
+    [Tooltip("The most a bolt may be turned away from straight out of the fire point to reach the crosshair point, in degrees. 90 = it may go sideways to hit the point; 180 = no limit (it can even turn round); 0 = never turn. Beyond this the bolt goes straight out.")]
+    [Range(0f, 180f)] public float maxAimBendAngle = 90f;
+    [Tooltip("Degrees below the max angle over which the turn fades out (so there is no snap at the limit).")]
+    [Range(0f, 90f)] public float aimBendFalloff = 20f;
+    [Tooltip("If the fire point has been pushed inside a wall or other solid (for example you are standing right up against it) bolts are stopped by it instead of coming out the other side: the shot hits the surface in front of the fire point.")]
+    public bool blockShotsThroughWalls = true;
+    [Tooltip("Layers that count as solid for the check above. Your own colliders and triggers are always ignored.")]
+    public LayerMask muzzleBlockMask = ~0;
+    [Tooltip("How far in front of the blocking surface (metres) the stopped bolt appears.")]
+    public float muzzleSurfaceOffset = 0.03f;
     [Tooltip("How far the aim ray looks. If it hits nothing, bolts converge on a point this far ahead.")]
     public float aimMaxDistance = 500f;
     [Tooltip("Which layers the aim ray can hit. Your own colliders and triggers are always ignored.")]
@@ -130,7 +142,7 @@ public class Blaster : MonoBehaviour
 
     [Header("Input Tuning")]
     [Tooltip("Analog trigger value above which a gamepad trigger counts as 'pressed'.")]
-    [Range(0.0f, 0.95f)]
+    [Range(0.05f, 0.95f)]
     public float triggerThreshold = 0.1f;
 
     [Header("BF3AI bot loadout (used by this component's menu: Save As Bot Loadout)")]
@@ -511,24 +523,29 @@ public class Blaster : MonoBehaviour
 
         foreach (Transform firePoint in firePoints)
         {
-            Vector3 aimDir = ResolveAimDirection(firePoint.position, firePoint.forward, aimPoint, hasAim, minAimDistance);
-            Quaternion baseRotation = hasAim ? Quaternion.LookRotation(aimDir, firePoint.up) : firePoint.rotation;
+            // Is the fire point inside (or behind) a solid? Then the bolt hits that surface instead of coming out the other side.
+            RaycastHit blockHit = default(RaycastHit);
+            bool muzzleBlocked = blockShotsThroughWalls && TryMuzzleBlock(firePoint.position, out blockHit);
+            Vector3 aimDir = ResolveAimDirection(firePoint.position, firePoint.forward, aimPoint, hasAim, minAimDistance, aimBlendDistance, maxAimBendAngle, aimBendFalloff);
+            if (muzzleBlocked) aimDir = -blockHit.normal;                       // fly straight into the surface that is in the way
+            Vector3 spawnPos = muzzleBlocked ? blockHit.point + blockHit.normal * Mathf.Max(0.005f, muzzleSurfaceOffset) : firePoint.position;
+            Quaternion baseRotation = (hasAim || muzzleBlocked) ? Quaternion.LookRotation(aimDir, firePoint.up) : firePoint.rotation;
 
             for (int i = 0; i < projectilesPerShot; i++)
             {
                 float randomSpreadX = Random.Range(-spreadX, spreadX);
                 float randomSpreadY = Random.Range(-spreadY, spreadY);
 
-                Quaternion aimRotation = baseRotation * Quaternion.Euler(randomSpreadX, randomSpreadY, 0f);
+                Quaternion aimRotation = muzzleBlocked ? baseRotation : baseRotation * Quaternion.Euler(randomSpreadX, randomSpreadY, 0f);
                 Quaternion visualRotation = aimRotation * Quaternion.Euler(projectileRotationOffset);
 
-                GameObject bulletInstance = Instantiate(bulletPrefab, firePoint.position, visualRotation);
+                GameObject bulletInstance = Instantiate(bulletPrefab, spawnPos, visualRotation);
 
                 Lazers bolt = bulletInstance.GetComponent<Lazers>();
                 if (bolt != null)
                 {
                     bolt.Initialize(bulletSpeed, damage, aimRotation * Vector3.forward);
-                    bolt.owner = owner;   // BF3AI: credit kills to the shooter, skip friendly fire
+                    bolt.SetOwner(owner);   // BF3AI: credit kills to the shooter and tag the bolt with its team so it never hurts teammates
                 }
                 else
                 {
@@ -572,21 +589,65 @@ public class Blaster : MonoBehaviour
         return true;
     }
 
-    private const float MaxAimDeviationDot = 0.5f;   // 60 degrees: never bend a shot further than this away from straight out of the fire point
-
     /// <summary>
-    /// Direction a projectile takes from a fire point. Towards the aim point, unless there is no aim point, it is closer than minDist,
-    /// or it would bend the shot more than 60 degrees away from the fire point's own forward: then straight out of the fire point.
+    /// Direction a projectile takes from a fire point: a smooth blend between "straight out of the fire point" and "at the aim point".
+    /// Distance weight: 0 at or below minDist, rising smoothly to 1 at minDist + blendDist (0 blendDist = hard switch).
+    /// Angle weight: 1 while the turn needed is at most (maxBend - falloff) degrees, fading to 0 at maxBend. maxBend 180 = no limit.
+    /// No aim point = straight out.
     /// </summary>
-    public static Vector3 ResolveAimDirection(Vector3 firePos, Vector3 fireForward, Vector3 aimPoint, bool hasAim, float minDist)
+    public static Vector3 ResolveAimDirection(Vector3 firePos, Vector3 fireForward, Vector3 aimPoint, bool hasAim, float minDist, float blendDist, float maxBendDeg, float falloffDeg)
     {
         if (!hasAim) return fireForward;
+        Vector3 fwd = fireForward.normalized;
         Vector3 d = aimPoint - firePos;
         float m = d.magnitude;
-        if (m < Mathf.Max(0.01f, minDist)) return fireForward;
+        if (m < 0.0001f) return fireForward;
         d /= m;
-        if (Vector3.Dot(d, fireForward.normalized) < MaxAimDeviationDot) return fireForward;
-        return d;
+
+        float wd = blendDist > 0.0001f ? Mathf.Clamp01((m - minDist) / blendDist) : (m > minDist ? 1f : 0f);
+        wd = wd * wd * (3f - 2f * wd);                                   // smoothstep
+
+        float angle = Mathf.Acos(Mathf.Clamp(Vector3.Dot(d, fwd), -1f, 1f)) * 57.29578f;
+        float wa;
+        if (maxBendDeg >= 179.5f) wa = 1f;                                // no limit
+        else if (falloffDeg > 0.0001f) wa = Mathf.Clamp01((maxBendDeg - angle) / falloffDeg);
+        else wa = angle <= maxBendDeg ? 1f : 0f;
+
+        float w = wd * wa;
+        if (w <= 0f) return fireForward;
+        Vector3 r = fwd * (1f - w) + d * w;
+        if (r.sqrMagnitude < 0.000001f) return fireForward;               // exactly opposite: no sensible blend
+        return r.normalized;
+    }
+
+    /// <summary>
+    /// True if a solid sits between the camera (your eyes) and the fire point, i.e. the fire point is inside or behind a wall.
+    /// Returns the first such surface. Your own colliders and triggers never count.
+    /// </summary>
+    private bool TryMuzzleBlock(Vector3 firePos, out RaycastHit block)
+    {
+        block = default(RaycastHit);
+        if (playerCamera == null) playerCamera = Camera.main;
+        if (playerCamera == null) return false;
+        Vector3 origin = playerCamera.transform.position;
+        // Third-person: the camera floats behind the player, so check from the player's own eyes instead.
+        if (owner != null && (origin - owner.Eye).sqrMagnitude > 1f) origin = owner.Eye;
+        Vector3 d = firePos - origin;
+        float dist = d.magnitude;
+        if (dist < 0.02f) return false;
+
+        int n = Physics.RaycastNonAlloc(new Ray(origin, d / dist), aimHits, dist, muzzleBlockMask, QueryTriggerInteraction.Ignore);
+        Transform skip = owner != null ? owner.transform : transform.root;
+        float best = float.MaxValue; bool found = false;
+        for (int i = 0; i < n; i++)
+        {
+            Collider c = aimHits[i].collider;
+            if (c == null) continue;
+            Transform t = c.transform;
+            if (t.IsChildOf(skip) || t.IsChildOf(transform)) continue;
+            if (aimHits[i].distance < best) { best = aimHits[i].distance; block = aimHits[i]; found = true; }
+        }
+        return found;
     }
 
     // Right-click this component's header (or the three dots) > BF3AI > Save As Bot Loadout.

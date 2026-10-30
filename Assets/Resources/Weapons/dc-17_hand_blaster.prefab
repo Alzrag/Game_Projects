@@ -187,7 +187,15 @@ MonoBehaviour:
   spreadY: 0.1
   magazineSize: 30
   aimAtCrosshair: 1
-  minAimDistance: 3
+  minAimDistance: 0.25
+  aimBlendDistance: 0.1
+  maxAimBendAngle: 90
+  aimBendFalloff: 20
+  blockShotsThroughWalls: 1
+  muzzleBlockMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  muzzleSurfaceOffset: 0.03
   aimMaxDistance: 500
   aimRayMask:
     serializedVersion: 2
@@ -219,7 +227,7 @@ MonoBehaviour:
   bulletPrefab: {fileID: 4528451882508599201, guid: 4f2b8c4d68996c202af98660e3c429cc, type: 3}
   bulletSpeed: 50
   projectileRotationOffset: {x: 90, y: 0, z: 0}
-  triggerThreshold: 0.00000001
+  triggerThreshold: 0.05
   botLoadoutId: 
   botClass: 0
   botWeight: 1

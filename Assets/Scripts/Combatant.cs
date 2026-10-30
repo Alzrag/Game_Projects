@@ -40,6 +40,7 @@ namespace BF3AI
         public float feetOffset = 0f;
 
         Vector3 lastPos; float nextStep;
+        float measuredScaleY = 1f;     // the object's scale when the feet offset was measured; lets Feet follow a crouch that scales the whole player
         [NonSerialized] public Combatant lastAttacker;
         [NonSerialized] public float lastDamageTime = -99f;
         public event Action<Combatant> OnDied;
@@ -47,13 +48,14 @@ namespace BF3AI
         public bool IsAlive { get { return health > 0f; } }
         public float CurrentHeight { get { return crouched ? crouchHeight : standingHeight; } }
         /// <summary>Point on the floor under this combatant. Everything height-related is measured up from here, so the origin can be anywhere.</summary>
-        public Vector3 Feet { get { return transform.position - Vector3.up * feetOffset; } }
+        public Vector3 Feet { get { return transform.position - Vector3.up * (feetOffset * (measuredScaleY > 0.0001f ? Mathf.Abs(transform.lossyScale.y) / measuredScaleY : 1f)); } }
         public Vector3 Chest { get { return Feet + Vector3.up * (CurrentHeight * 0.7f); } }
         public Vector3 Eye { get { return Feet + Vector3.up * (CurrentHeight - 0.15f); } }
 
         void OnEnable()
         {
             All.Add(this); lastPos = transform.position;
+            measuredScaleY = Mathf.Max(0.0001f, Mathf.Abs(transform.lossyScale.y));
             if (autoFeetOffset) MeasureFeetOffset();
         }
 
