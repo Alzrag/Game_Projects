@@ -6,6 +6,9 @@ public class WeaponManager : MonoBehaviour
     public string weaponsPath = "Weapons"; // Folder inside Resources
     public string selectedWeaponP;
     public string selectedWeaponS;
+    [Tooltip("BF3AI deploy menu: Resources paths of the attachments to put on each weapon (Optic, Barrel, Grip). Empty = none.")]
+    public string[] primaryAttachments;
+    public string[] secondaryAttachments;
     
     public Transform leftHand;
     public Transform rightHand;
@@ -95,6 +98,18 @@ public class WeaponManager : MonoBehaviour
         combatant.usingHeavyWeapon = b != null && b.spoolSettings.isSpoolable;
     }
 
+    /// <summary>BF3AI deploy menu: throws away the current weapons and equips the selected ones (with attachments).</summary>
+    public void Reequip()
+    {
+        if (primaryWeapon != null) Destroy(primaryWeapon);
+        if (secondaryWeapon != null) Destroy(secondaryWeapon);
+        primaryWeapon = null; secondaryWeapon = null;
+        activeWeapon = true;
+        if (combatant == null) combatant = GetComponentInParent<BF3AI.Combatant>();
+        LoadSelectedWeapon();
+        UpdateThreatFlags();
+    }
+
     void LoadSelectedWeapon()
     {
         Transform initialHand = activeHand ? rightHand : leftHand;
@@ -110,6 +125,7 @@ public class WeaponManager : MonoBehaviour
                 primaryWeapon = Instantiate(weaponPrefabP, initialHand);
                 primaryWeapon.transform.localPosition = Vector3.zero;
                 primaryWeapon.transform.localRotation = Quaternion.identity;
+                BF3AI.WeaponAttachment.AttachAll(primaryWeapon, primaryAttachments);   // BF3AI
             }
             else
             {
@@ -128,6 +144,7 @@ public class WeaponManager : MonoBehaviour
                 secondaryWeapon = Instantiate(weaponPrefabS, initialHand);
                 secondaryWeapon.transform.localPosition = Vector3.zero;
                 secondaryWeapon.transform.localRotation = Quaternion.identity;
+                BF3AI.WeaponAttachment.AttachAll(secondaryWeapon, secondaryAttachments);   // BF3AI
                 secondaryWeapon.SetActive(false); // Start with secondary hidden
             }
             else

@@ -14,6 +14,8 @@ public class PlayerDeath : MonoBehaviour
     [Tooltip("Where the player reappears. Must be on the NavMesh side of the level (e.g. your PlayerSpawn object).")]
     public Transform respawnPoint;
     public float respawnDelay = 3f;
+    [Tooltip("If the scene has a DeployMenu, open it after the respawn delay (pick class, loadout and where to spawn) instead of respawning at once.")]
+    public bool useDeployMenu = true;
     [Tooltip("Optional: extra scripts to switch off while dead (animation drivers, UI, etc).")]
     public Behaviour[] alsoDisableWhileDead;
 
@@ -43,7 +45,12 @@ public class PlayerDeath : MonoBehaviour
 
     void Update()
     {
-        if (respawnAt > 0f && Time.time >= respawnAt) { respawnAt = -1f; Respawn(); }
+        if (respawnAt > 0f && Time.time >= respawnAt)
+        {
+            respawnAt = -1f;
+            if (useDeployMenu && DeployMenu.Instance != null) DeployMenu.Instance.Open(gameObject);   // the menu spawns a fresh player and removes this one
+            else Respawn();
+        }
     }
 
     void Respawn()
@@ -52,7 +59,12 @@ public class PlayerDeath : MonoBehaviour
         Quaternion rot = respawnPoint != null ? respawnPoint.rotation : startRot;
         if (respawnPoint == null)
             Debug.LogWarning("[PlayerDeath] No Respawn Point assigned; respawning at the position the game started from.");
+        RespawnAt(pos, rot);
+    }
 
+    /// <summary>Brings the player back to life at a position (the deploy menu uses this when a class has no player prefab).</summary>
+    public void RespawnAt(Vector3 pos, Quaternion rot)
+    {
         // The player's origin may be mid-body (see Combatant.Feet): lift the spawn so the feet land on the spawn point.
         pos += Vector3.up * c.feetOffset;
 

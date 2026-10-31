@@ -686,6 +686,9 @@ public class Blaster : MonoBehaviour
             Debug.LogWarning("[Blaster] No prefab 'Resources/" + BF3AI.LoadoutStore.weaponsPath + "/" + weaponName + "' was found, so bots using this row will fire generated tracers and show no weapon. Put the weapon prefab in a Resources/" + BF3AI.LoadoutStore.weaponsPath + " folder (the same one WeaponManager loads from).", this);
     }
 
+    /// <summary>Fills the magazine (used after attachments change the magazine size).</summary>
+    public void RefillAmmo() { currentAmmo = magazineSize; }
+
     /// <summary>Starts a reload (takes Reload Time seconds, firing is blocked meanwhile). Ignored if full, infinite or already reloading.</summary>
     public void Reload()
     {

@@ -130,6 +130,7 @@ GameObject:
   - component: {fileID: 93556317}
   - component: {fileID: 93556319}
   - component: {fileID: 93556318}
+  - component: {fileID: 93556320}
   m_Layer: 0
   m_Name: GODHAND
   m_TagString: Untagged
@@ -168,7 +169,7 @@ MonoBehaviour:
   teams:
   - team: 1
     unitPrefab: {fileID: 7704583126658912721, guid: 15eae029cfa57aac0b63819a77110812, type: 3}
-    grenadePrefab: {fileID: 0}
+    grenadePrefab: {fileID: 5240783554999066654, guid: f07475e47e28d01a587aadb0113ace60, type: 3}
     spawnPoints:
     - {fileID: 130962049}
     objectives: []
@@ -8427,6 +8428,31 @@ MonoBehaviour:
     volume: 855562.1
   drawGizmos: 1
   gizmoRadius: 45
+--- !u!114 &93556320
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 93556315}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c5aab187b79085ab0ae55ed57deba78c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BF3AI.DeployMenu
+  openOnStart: 1
+  pauseAtStart: 1
+  lockCursorOnClose: 1
+  playerTeam: 1
+  mapName: 
+  mapTexture: {fileID: 0}
+  mapWorldMin: {x: -100, y: 0, z: -100}
+  mapWorldMax: {x: 100, y: 0, z: 100}
+  captureResolution: 1024
+  captureMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  capturePadding: 0.05
 --- !u!1 &130962048
 GameObject:
   m_ObjectHideFlags: 0
@@ -8741,6 +8767,7 @@ GameObject:
   - component: {fileID: 382070567}
   - component: {fileID: 382070569}
   - component: {fileID: 382070570}
+  - component: {fileID: 382070572}
   m_Layer: 6
   m_Name: player
   m_TagString: Untagged
@@ -8909,6 +8936,18 @@ MonoBehaviour:
     m_Bits: 4294967295
   cameraReboundSpeed: 5
   weaponHolder: {fileID: 829160215}
+  crouchToggle: 0
+  crouchScaleFactor: 0.6
+  crouchSpeedMult: 0.5
+  crouchTransitionSpeed: 10
+  crouchAnimator: {fileID: 0}
+  crouchBoolParam: Crouching
+  standUpCheckMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  stepHeight: 0.5
+  slopeLimit: 50
+  groundedStickForce: 2
   hand: 1
 --- !u!114 &382070569
 MonoBehaviour:
@@ -8973,7 +9012,35 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::PlayerDeath
   respawnPoint: {fileID: 1454096522}
   respawnDelay: 3
+  useDeployMenu: 1
   alsoDisableWhileDead: []
+--- !u!114 &382070572
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 382070562}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4713eaf319f81383fa00c9e1dcf7e718, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BF3AI.PlayerGrenadeThrower
+  grenadePrefab: {fileID: 0}
+  grenades: 3
+  maxGrenades: 5
+  handPoint: {fileID: 0}
+  playerCamera: {fileID: 0}
+  maxThrowSpeed: 17
+  throwArc: 28
+  aimDistance: 45
+  aimMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  handOffset: {x: 0.35, y: -0.3, z: 0.6}
+  showHud: 1
+  hudOffset: {x: 20, y: 90}
+  hudColor: {r: 1, g: 1, b: 1, a: 1}
 --- !u!1 &410087039
 GameObject:
   m_ObjectHideFlags: 0
@@ -9181,6 +9248,8 @@ MonoBehaviour:
   weaponsPath: Weapons
   selectedWeaponP: dc-17_hand_blaster
   selectedWeaponS: 
+  primaryAttachments: []
+  secondaryAttachments: []
   leftHand: {fileID: 478815232}
   rightHand: {fileID: 1140280957}
   playerMov: {fileID: 382070568}

@@ -145,6 +145,18 @@ public class Lazers : MonoBehaviour
         BF3AI.Combatant who = hit.collider != null ? hit.collider.GetComponentInParent<BF3AI.Combatant>() : null;
         if (IsFriendly(who, owner, hasTeam, team)) return false;   // never snap to or stop at a teammate
 
+        // A grenade in the air: a bolt that hits it sets it off. (Held grenades, and ones that opt out, are ignored.)
+        BF3AI.GrenadeProjectile grenade = hit.collider != null ? hit.collider.GetComponentInParent<BF3AI.GrenadeProjectile>() : null;
+        if (grenade != null)
+        {
+            if (grenade.IsHeld || !grenade.canBeShot) return false;
+            transform.position = hit.point;
+            grenade.OnShot(owner);
+            SpawnImpactEffect(hit.point, hit.normal);
+            Destroy(gameObject);
+            return true;
+        }
+
         // Snap the bolt to the exact impact point before doing anything else,
         // so effects and destruction look right.
         transform.position = hit.point;

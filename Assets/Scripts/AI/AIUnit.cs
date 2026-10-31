@@ -706,7 +706,7 @@ namespace BF3AI
             personality = Personality.Generate(unitClass);
             combatant.maxHealth = profile.health;
             combatant.ResetHealth();
-            grenades = profile.grenades; kills = 0; suppression = 0f; lifeStart = Time.time;
+            grenades = profile.grenades; heldGrenade = null; kills = 0; suppression = 0f; lifeStart = Time.time;
             order = null; cover = null; target = null; movingToCover = false;
             mode = Mode.Idle; fireMode = FireMode.None;
             if (!agent.Warp(pos))
@@ -829,6 +829,7 @@ namespace BF3AI
 
         void HandleDeath(Combatant killer)
         {
+            try { DropHeldGrenade(); } catch (Exception) { }
             try { HandleDeathInner(killer); }
             catch (Exception e)
             {
@@ -921,6 +922,7 @@ namespace BF3AI
                 if (DeathHeatmap.I != null) DeathHeatmap.I.RecordVisit(transform.position, team);
             }
             if (Time.time >= nextWatch) { nextWatch = Time.time + 1f; Watchdog(); }
+            UpdateGrenadeHold();
             Act();
         }
 
@@ -1578,21 +1580,172 @@ namespace BF3AI
             else if (fireMode == FireMode.Blind) { shotsBlind++; if (anyHit) hitsBlind++; }
         }
 
+        // ================================================================= grenades
+        // A bot works out its throw with GrenadePlanner (direct lob, lob over cover, or one-bounce bank shot), decides whether it is worth a
+        // grenade, then either throws at once or HOLDS it (cooks the fuse) for a moment so the enemy has no time to react.
+        GrenadeProjectile heldGrenade;
+        GrenadePlan heldPlan;
+        /// <summary>The most recent throw this bot planned (for debugging and tests).</summary>
+        public GrenadePlan lastGrenadePlan;
+        float releaseAt, nextGrenadeThink, nextShootGrenade;
+        Transform grenadeHand;
+        static readonly List<GrenadeTarget> gTargets = new List<GrenadeTarget>();
+
         void TryGrenade(Contact tc)
         {
-            if (grenades <= 0 || tc == null || Time.time < nextGrenade) return;
-            float d = Tactics.Flat(tc.lastPos - transform.position).magnitude;
-            if (d < 8f || d > 32f) return;
-            int cluster = 0;
-            foreach (Combatant o in Combatant.All)
-                if (o.team != team && o.IsAlive && (o.transform.position - tc.lastPos).sqrMagnitude < 25f) cluster++;
-            bool hiding = !tc.visible && tc.Age < 5f;
-            if (!(hiding || cluster >= 2) || Random.value > 0.5f + 0.4f * Agg) return;
-            nextGrenade = Time.time + Random.Range(6f, 10f);
-            grenades--;
+            TryShootGrenade();
+            if (heldGrenade != null || grenades <= 0 || Time.time < nextGrenade || Time.time < nextGrenadeThink) return;
+            nextGrenadeThink = Time.time + Random.Range(0.7f, 1.2f);
+
+            // what do we know about the enemy? (only what this bot or its platoon has seen or heard: no cheating)
+            gTargets.Clear();
+            Vector3 me = transform.position;
+            bool anyVisible = false;
+            for (int i = 0; i < known.Count; i++)
+            {
+                Contact c = known[i];
+                if (c.Age > 8f || Tactics.Flat(c.lastPos - me).magnitude > 45f) continue;
+                GrenadeTarget t = new GrenadeTarget();
+                t.pos = c.visible ? c.PredictedPos : c.lastPos;
+                float w = c.visible ? 1f : Mathf.Max(0.25f, 1f - c.Age / 8f);
+                if (c.heardOnly) w *= 0.5f;
+                t.weight = w;
+                t.hp = 100f; t.maxHp = 100f; t.covered = !c.visible;
+                if (c.who != null)
+                {
+                    t.hp = Mathf.Max(1f, c.who.health); t.maxHp = Mathf.Max(1f, c.who.maxHealth);
+                    AIUnit eu = c.who.GetComponent<AIUnit>();
+                    if (eu != null && eu.mode == Mode.InCover) t.covered = true;
+                }
+                if (c.visible) anyVisible = true;
+                gTargets.Add(t);
+            }
+            if (gTargets.Count == 0) return;
+
+            GrenadeSpec spec = GrenadeSpec.For(grenadePrefab);
+            bool urgent = suppression > 0.45f || (tc != null && tc.visible && Tactics.Flat(tc.lastPos - me).magnitude < 10f);   // under pressure: no time to hold it
+            Vector3 from = Eye + transform.forward * 0.5f;
+            GrenadePlan plan = GrenadePlanner.Plan(from, combatant, gTargets, spec, true, urgent);
+            if (plan == null || plan.danger > 0.15f) return;
+
+            // is it worth a grenade? Groups are what grenades are for; otherwise flush a hiding enemy, or soften one up before we move in.
+            float thr = 0.85f;
+            bool engaging = tc != null && (mode == Mode.Charge || mode == Mode.Advance || mode == Mode.Flank);
+            bool hidingTarget = tc != null && !tc.visible && tc.Age < 6f;
+            if (engaging && anyVisible) thr = 0.5f;
+            if (hidingTarget) thr = Mathf.Min(thr, 0.45f);
+            if (plan.hits >= 2) thr *= 0.75f;
+            thr *= Mathf.Lerp(1.2f, 0.8f, Agg);
+            if (grenades <= 1) thr *= 1.25f;
+            if (plan.value < thr) return;
+
+            nextGrenade = Time.time + Random.Range(5f, 8f);
+            grenades--; lastGrenadePlan = plan;
             if (BF3Debug.On(DbgLevel.Info, DbgCat.Grenade))
-                BF3Debug.I(DbgCat.Grenade, Tag + " throws at " + tc.lastPos.ToString("F0") + " (" + d.ToString("F0") + " m, " + (tc.visible ? "visible" : "hiding target") + ", cluster " + cluster + "); " + grenades + " left.", this, uid);
-            Grenade.Throw(grenadePrefab, Eye + transform.forward * 0.5f, tc.lastPos, combatant);
+                BF3Debug.I(DbgCat.Grenade, Tag + " throws (" + plan + "; needs " + thr.ToString("F2") + "; " + gTargets.Count + " known enemies); " + grenades + " left.", this, uid);
+
+            float cook = Mathf.Min(plan.cook, spec.HoldLimit - 0.2f);
+            if (cook >= 0.25f) BeginGrenadeHold(plan, cook);
+            else ReleaseGrenade(plan, plan.velocity, 0f);
+        }
+
+        void BeginGrenadeHold(GrenadePlan plan, float cook)
+        {
+            if (grenadeHand == null)
+            {
+                GameObject h = new GameObject("GrenadeHand");
+                h.transform.SetParent(transform, false);
+                grenadeHand = h.transform;
+            }
+            grenadeHand.position = plan.from;
+            heldGrenade = GrenadeProjectile.BeginHold(grenadePrefab, combatant, grenadeHand);
+            heldGrenade.OnPutAway += HandleGrenadePutAway;
+            heldPlan = plan;
+            releaseAt = Time.time + cook;
+        }
+
+        void HandleGrenadePutAway(GrenadeProjectile g)
+        {
+            if (g == heldGrenade) { heldGrenade = null; grenades++; nextGrenade = Time.time + 3f; }     // it was never thrown: the bot keeps it
+        }
+
+        // called every frame: lets go of a held grenade when its time is up
+        void UpdateGrenadeHold()
+        {
+            if (heldGrenade == null) return;
+            if (heldGrenade.HasDetonated) { heldGrenade = null; return; }
+            if (Time.time < releaseAt) return;
+            GrenadeProjectile g = heldGrenade; heldGrenade = null;
+            Vector3 from = grenadeHand != null ? grenadeHand.position : heldPlan.from;
+            Vector3 vel = heldPlan.velocity;
+            if (Tactics.Flat(from - heldPlan.from).magnitude > 0.8f || Mathf.Abs(from.y - heldPlan.from.y) > 0.6f)
+            {
+                // the bot moved while holding it: aim again at the same spot. If that is out of reach, put it away.
+                Vector3 v2;
+                if (!GrenadeProjectile.SolveThrow(from, heldPlan.endPos, 45f, out v2)) { g.PutAway(); return; }     // (OnPutAway gives it back)
+                vel = v2;
+            }
+            g.OnPutAway -= HandleGrenadePutAway;
+            ReleaseGrenade(heldPlan, vel, g);
+        }
+
+        void ReleaseGrenade(GrenadePlan plan, Vector3 vel, float cooked)
+        {
+            vel += Random.insideUnitSphere * (0.3f * Mathf.Lerp(1.2f, 0.5f, personality.marksmanship));      // a little human error
+            GrenadeProjectile g = GrenadeProjectile.Launch(grenadePrefab, plan.from, vel, combatant, cooked);
+            if (g == null) { grenades++; nextGrenade = Time.time + 2f; }
+        }
+
+        void ReleaseGrenade(GrenadePlan plan, Vector3 vel, GrenadeProjectile held)
+        {
+            vel += Random.insideUnitSphere * (0.3f * Mathf.Lerp(1.2f, 0.5f, personality.marksmanship));
+            held.Release(vel);
+        }
+
+        // a bot that dies holding a grenade drops it (the fuse keeps running)
+        void DropHeldGrenade()
+        {
+            if (heldGrenade == null) return;
+            GrenadeProjectile g = heldGrenade; heldGrenade = null;
+            g.OnPutAway -= HandleGrenadePutAway;
+            g.Release(Vector3.zero);
+        }
+
+        // Shoots an enemy grenade out of the air when it is about to land on the team and is still far enough from everyone to pop it safely.
+        void TryShootGrenade()
+        {
+            if (Time.time < nextShootGrenade || GrenadeProjectile.All.Count == 0) return;
+            nextShootGrenade = Time.time + 0.3f;
+            for (int i = 0; i < GrenadeProjectile.All.Count; i++)
+            {
+                GrenadeProjectile gp = GrenadeProjectile.All[i];
+                if (gp == null || gp.IsHeld || gp.HasDetonated || !gp.canBeShot) continue;
+                if (gp.hasTeam && gp.team == team) continue;
+                Vector3 gpos = gp.transform.position;
+                float d = Vector3.Distance(Eye, gpos);
+                if (d < 4f || d > 45f) continue;
+                if (gp.TimeLeft < 0.25f) continue;
+                if (Physics.Linecast(Eye, gpos, AIWorld.Obstacles, QueryTriggerInteraction.Ignore)) continue;
+
+                // where will it go off, and would that hurt us?
+                GrenadeProjectile.FlightResult fr = GrenadeProjectile.Simulate(gpos, gp.Velocity, Mathf.Min(gp.TimeLeft, 4f), gp.bounciness, gp.friction, gp.detonateOnImpact, 0f, gp.minImpactSpeed, 1);
+                bool threat = false, safeNow = true;
+                float r = gp.radius;
+                for (int k = 0; k < Combatant.All.Count; k++)
+                {
+                    Combatant c = Combatant.All[k];
+                    if (c == null || !c.IsAlive || c.team != team) continue;
+                    if (Vector3.Distance(fr.endPos, c.Chest) < r) threat = true;
+                    if (Vector3.Distance(gpos, c.Chest) < r + 1.5f) safeNow = false;
+                }
+                if (!threat || !safeNow) continue;
+                float chance = 0.2f + 0.5f * personality.marksmanship * Mathf.Clamp01(1f - suppression);
+                if (Random.value > chance) continue;
+                Vector3 dir = (gpos - Eye).normalized;
+                BF3Debug.I(DbgCat.Grenade, Tag + " shoots an incoming grenade at " + d.ToString("F0") + " m.", this, uid);
+                AIWorld.Fire(combatant, Eye, dir, d + 2f, 0f, null, true);
+                break;
+            }
         }
 
         // ================================================================= debug / watchdog

@@ -250,7 +250,7 @@ namespace BF3AI
             public int team = 1;
             [Tooltip("Prefab with Combatant + AIUnit + NavMeshAgent (+ a collider). Same prefab is used for all four classes.")]
             public GameObject unitPrefab;
-            [Tooltip("Optional. Visual for thrown grenades. If empty, a small sphere is generated.")]
+            [Tooltip("Optional. Grenade prefab with a GrenadeProjectile component (BF3AI menu > Create Grenade Prefab makes one). If empty, a built-in grenade is generated.")]
             public GameObject grenadePrefab;
             public Transform[] spawnPoints;
             [Tooltip("Objectives this team pushes through in order (capture points, etc). Empty = hunt the nearest enemy.")]
@@ -1140,10 +1140,22 @@ namespace BF3AI
             Combatant victim = null;
             // every solid stops a bullet completely: there is no see-through or penetrable cover
             float dmg = damage;
+            GrenadeProjectile shotGrenade = null;
             for (int i = 0; i < n; i++)
             {
                 RaycastHit h = buf[i];
                 if (h.collider.transform.IsChildOf(shooter.transform)) continue;
+                if (GrenadeProjectile.All.Count > 0)
+                {
+                    // a grenade in the air stops a bullet and goes off (unless it is a teammate's, or still in someone's hand)
+                    GrenadeProjectile gr = h.collider.GetComponentInParent<GrenadeProjectile>();
+                    if (gr != null)
+                    {
+                        if (gr.IsHeld || !gr.canBeShot || (gr.hasTeam && gr.team == shooter.team)) continue;
+                        end = h.point; shotGrenade = gr;
+                        break;
+                    }
+                }
                 Combatant c = h.collider.GetComponentInParent<Combatant>();
                 if (c != null)
                 {
@@ -1160,6 +1172,7 @@ namespace BF3AI
                 if (victim != null) victim.TakeDamage(dmg, shooter);
             }
             else BoltVisuals.Spawn(visual, origin, end, victim, shooter, dmg);
+            if (shotGrenade != null) shotGrenade.OnShot(shooter);
 
             // near-miss suppression on enemy AI
             Vector3 ab = end - origin;
@@ -1354,96 +1367,24 @@ namespace BF3AI
         }
     }
     /// <summary>
-    /// Thrown grenades. No MonoBehaviour or prefab component needed: SquadManager ticks the live list.
-    /// 45 degree ballistic throw, 2.5 s fuse, 6 m radius, 120 damage with falloff, never hurts the thrower's team.
+    /// Thrown grenades for the AI. The work is done by GrenadeProjectile (GrenadeProjectile.cs): this class keeps the old entry points and the
+    /// default numbers (used when a grenade prefab has no GrenadeProjectile of its own): 45 degree throw, 2.5 s fuse, 6 m radius, 120 damage with falloff.
+    /// A prefab that DOES carry a GrenadeProjectile uses its own settings instead.
     /// </summary>
     public static class Grenade
     {
         public static float fuse = 2.5f, radius = 6f, maxDamage = 120f;
 
-        class Live { public GameObject go; public Rigidbody rb; public float boom; public Combatant owner; }
-        static readonly List<Live> live = new List<Live>();
-        static readonly List<Combatant> copy = new List<Combatant>();
+        public static void Clear() { GrenadeProjectile.ClearAll(); }
+        public static void Tick() { }     // grenades run themselves now (kept so existing callers still compile)
 
-        public static void Clear() { live.Clear(); }
-
-        public static void Throw(GameObject prefab, Vector3 from, Vector3 to, Combatant owner)
+        /// <summary>Returns false if the target could not be reached (nothing was thrown).</summary>
+        public static bool Throw(GameObject prefab, Vector3 from, Vector3 to, Combatant owner)
         {
-            GameObject go;
-            if (prefab != null) go = UnityEngine.Object.Instantiate(prefab, from, Quaternion.identity);
-            else
-            {
-                go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                go.transform.position = from; go.transform.localScale = Vector3.one * 0.2f;
-                go.GetComponent<Renderer>().material.color = new Color(0.2f, 0.25f, 0.2f);
-            }
-            Rigidbody rb = go.GetComponent<Rigidbody>();
-            if (rb == null) rb = go.AddComponent<Rigidbody>();
-
-            // 45 deg launch: v^2 = g d^2 / (d - h)
-            Vector3 flat = Tactics.Flat(to - from);
-            float d = Mathf.Max(1f, flat.magnitude);
-            float h = to.y - from.y;
-            float g = Mathf.Abs(Physics.gravity.y);
-            float v = Mathf.Sqrt(g * d * d / Mathf.Max(0.5f, d - h));
-            Vector3 vel = flat.normalized * (v * 0.7071f) + Vector3.up * (v * 0.7071f);
-            vel += Random.insideUnitSphere * 0.4f;     // a little error so throws aren't laser-perfect
-            if (float.IsNaN(vel.x) || float.IsNaN(vel.y) || float.IsNaN(vel.z) || float.IsInfinity(vel.x) || float.IsInfinity(vel.y) || float.IsInfinity(vel.z))
-            {
-                BF3Debug.E(DbgCat.Grenade, "Grenade throw produced an invalid velocity (from " + from.ToString("F1") + " to " + to.ToString("F1") + "); grenade discarded.");
-                UnityEngine.Object.Destroy(go);
-                return;
-            }
-            if (BF3Debug.On(DbgLevel.Info, DbgCat.Grenade))
-                BF3Debug.I(DbgCat.Grenade, (owner != null ? owner.name : "?") + " throws a grenade " + d.ToString("F0") + " m (speed " + vel.magnitude.ToString("F1") + " m/s).");
-#if UNITY_6000_0_OR_NEWER
-            rb.linearVelocity = vel;
-#else
-            rb.velocity = vel;
-#endif
-            live.Add(new Live { go = go, rb = rb, boom = Time.time + fuse, owner = owner });
-        }
-
-        public static void Tick()
-        {
-            for (int i = live.Count - 1; i >= 0; i--)
-            {
-                Live g = live[i];
-                if (g.go == null) { live.RemoveAt(i); continue; }
-                if (Time.time < g.boom) continue;
-                Vector3 pos = g.go.transform.position; Combatant ow = g.owner; GameObject go = g.go;
-                live.RemoveAt(i);                                   // remove first so a failing Explode can never loop forever
-                UnityEngine.Object.Destroy(go);
-                try { Explode(pos, ow); }
-                catch (Exception e) { BF3Debug.Exception("Grenade.Explode", e, null, null); }
-            }
-        }
-
-        static void Explode(Vector3 pos, Combatant owner)
-        {
-            int team = owner != null ? owner.team : -1;
-            SoundBus.Emit(pos, 80f, team, SoundType.Explosion);
-
-            copy.Clear(); copy.AddRange(Combatant.All);     // TakeDamage can deactivate units and mutate the list
-            int hits = 0, shielded = 0;
-            for (int i = 0; i < copy.Count; i++)
-            {
-                Combatant c = copy[i];
-                if (c == null || !c.IsAlive || c.team == team) continue;
-                Vector3 p = c.Chest;
-                float d = Vector3.Distance(pos, p);
-                if (d > radius) continue;
-                if (Physics.Linecast(pos + Vector3.up * 0.2f, p, AIWorld.Obstacles, QueryTriggerInteraction.Ignore)) { shielded++; continue; }   // walls shield
-                c.TakeDamage(maxDamage * (1f - d / radius), owner);
-                hits++;
-            }
-            foreach (AIUnit a in AIUnit.All)
-                if (a.team != team && a.IsAlive)
-                {
-                    float d = Vector3.Distance(pos, a.transform.position);
-                    if (d < radius * 2f) a.AddSuppression(0.5f * (1f - d / (radius * 2f)));
-                }
-            BF3Debug.I(DbgCat.Grenade, "Grenade exploded at " + pos.ToString("F0") + ": hit " + hits + ", shielded by walls " + shielded + ".");
+            GrenadeProjectile g = GrenadeProjectile.ThrowAt(prefab, from, to, owner, 0.4f, 45f);
+            if (g == null)
+                BF3Debug.W(DbgCat.Grenade, (owner != null ? owner.name : "?") + " could not throw a grenade from " + from.ToString("F1") + " to " + to.ToString("F1") + " (out of reach).");
+            return g != null;
         }
     }
 
